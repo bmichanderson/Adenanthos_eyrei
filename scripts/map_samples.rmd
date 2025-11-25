@@ -1,0 +1,275 @@
+---
+title: "Mapping sampling locations"
+output: html_document
+---
+
+This document describes the creation of a sampling map for *Adenanthos*  
+It relies on the spatial data from https://gadm.org/download_country.html (choose the Geopackage)  
+and IBRA v. 7 data from https://www.environment.gov.au/fed/catalog/search/  
+
+Note: to avoid a massive SVG, plots and labels can be combined/added in Inkscape  
+
+Set the working directory to the folder where the input files are (or links to them)
+```{r}
+setwd("~/projects/Adenanthos/map")
+```
+
+Load up the required libraries and designate the input files  
+The `locations.tab` file should have a population/sampling label (e.g. `FOR1`), latitude and longitude, tab separated per line (no header)  
+Distribution data (a csv file) needs to have at least three columns named `Species`, `Longitude` and `Latitude`
+```{r}
+suppressMessages(library(sf))
+suppressMessages(library(ggplot2))
+suppressMessages(library(ggspatial))
+suppressMessages(library(extrafont))
+mapfile <- "gadm41_AUS.gpkg"
+ibra_file <- "IBRA7_subregions.shp"
+coord_data <- "locations.tab"
+dist_data <- "A_coords.csv"
+
+# Australia state boundaries
+wa_file <- "WA_STATE_POLYGON_shp.shp"
+qld_file <- "QLD_STATE_POLYGON_shp.shp"
+sa_file <- "SA_STATE_POLYGON_shp.shp"
+nt_file <- "NT_STATE_POLYGON_shp.shp"
+nsw_file <- "NSW_STATE_POLYGON_shp.shp"
+vic_file <- "VIC_STATE_POLYGON_shp.shp"
+tas_file <- "TAS_STATE_POLYGON_shp.shp"
+act_file <- "ACT_STATE_POLYGON_shp.shp"
+```
+
+Import fonts  
+Note: if running on a system without Arial (or your desired font), you might need to install the
+ttf-mscorefonts-installer package
+```{r}
+suppressMessages(font_import(prompt = FALSE))
+loadfonts()
+```
+
+Manually choose and set the limits of the desired output map area (x lon, y lat)  
+The limits on the map area are then automatically used to roughly set appropriate dimensions of output 
+```{r}
+xlimits <- c(116.5, 127.5)
+ylimits <- c(-35.2, -31.5)
+ratio <- abs((xlimits[2] - xlimits[1]) / (ylimits[2] - ylimits[1]))
+if (ratio > 1) { 	# wider than tall
+	output_width <- 30
+	output_height <- 30 / ratio
+} else {	# taller than wide
+	output_height <- 30
+	output_width <- 30 * ratio
+}
+```
+
+Set the "species" (should match the `Species` column in the distributions file)
+```{r}
+species <- c("cuneatus",
+	"dobsonii",
+	"eyrei",
+	"forrestii",
+	"glabrescens",
+	"ileticos",
+	"sericeus"
+)
+```
+
+Create a colour palette for the "species" (same length and order)
+```{r}
+col_pal <- c("#cc79a7",
+	"#56b4e9",
+	"#d55e00",
+	"#009e73",
+	"#0072b2",
+	"#f0e442",
+	"#e69f00"
+)
+```
+
+Read in the locality data (`locations.tab`)  
+```{r}
+coord_df <- read.table(coord_data, header = FALSE)
+colnames(coord_df) <- c("Label", "Latitude", "Longitude")
+```
+
+Set the associated colours for the plotting locations (populations/samples)  
+Locality naming convention matches "species" or categories (can be searched)  
+Ensure the order matches the colour palette order
+```{r}
+groups <- c("CUN",
+	"DOB",
+	"HERB",
+	"FOR",
+	"GLA",
+	"ILE",
+	"SER"
+)
+# cycle through the groups
+indices <- rep(NA, nrow(coord_df))
+index <- 1
+for (group in groups) {
+	indices[grep(group, coord_df$Label)] <- index
+	index <- index + 1
+}
+# assign colour
+coord_df$Colour <- col_pal[indices]
+```
+
+Load the distribution coordinates and filter missing data  
+Subset the data to match the "species", then set corresponding colours
+```{r}
+dist_df <- read.csv(dist_data)
+filter_dist <- dist_df[!is.na(dist_df$Longitude), ]
+filter_dist <- filter_dist[!is.na(filter_dist$Latitude), ]
+species_df <- filter_dist[filter_dist$Species %in% species, ]
+spp <- species_df$Species
+# cycle through the species
+indices <- rep(NA, nrow(species_df))
+index <- 1
+for (entry in species) {
+	indices[which(species_df$Species == entry)] <- index
+	index <- index + 1
+}
+# assign colour
+species_df$Colour <- col_pal[indices]
+```
+
+Convert filtered dataframe(s) latitude and longitude to geo coords  
+4283 is the EPSG code for the GDA94 CRS (side note: WGS84 = 4326)
+```{r}
+locations <- st_as_sf(coord_df, coords = c(x = "Longitude", y = "Latitude"),
+	crs = 4283, agr = "constant")
+```
+Similarly for distribution data, if present
+```{r}
+distributions <- st_as_sf(species_df, coords = c(x = "Longitude", y = "Latitude"),
+	crs = 4283, agr = "constant")
+```
+
+Load the base map and use the first one: an outline of Australia  
+Transform to GDA94
+```{r}
+mylayers <- st_layers(mapfile)
+mylayer <- st_read(mapfile, layer = mylayers$name[1])
+mylayer <- st_transform(mylayer, crs = 4283)
+```
+
+Load the IBRA (sub)regions shapefile
+```{r}
+ibra_shp <- st_read(ibra_file)
+ibra_shp <- st_transform(ibra_shp, crs = 4283)
+```
+
+Load the state boundaries (already GDA94)
+```{r}
+act_shp <- st_read(act_file)
+nsw_shp <- st_read(nsw_file)
+nt_shp <- st_read(nt_file)
+qld_shp <- st_read(qld_file)
+sa_shp <- st_read(sa_file)
+tas_shp <- st_read(tas_file)
+vic_shp <- st_read(vic_file)
+wa_shp <- st_read(wa_file)
+```
+
+Set the basemap outline and fill
+```{r}
+basemap_outline <- mylayer
+basemap <- ibra_shp
+```
+
+Create an inset for where this area is in Australia  
+Note: plot this separately (see next chunk) to place manually in Inkscape by using the full object rather than the grob  
+```{r}
+bounding_box <- st_as_sfc(st_bbox(c(xmin = xlimits[1], xmax = xlimits[2],
+	ymin = ylimits[1], ymax = ylimits[2]), crs = 4283))
+myfullinset <- ggplot(data = mylayer[1]) +
+	geom_sf(fill = "#efefef", linewidth = 0.8) +
+	geom_sf(data = act_shp, fill = NA, color = "#252525", linewidth = 0.8) +
+	geom_sf(data = nsw_shp, fill = NA, color = "#252525", linewidth = 0.8) +
+	geom_sf(data = nt_shp, fill = NA, color = "#252525", linewidth = 0.8) +
+	geom_sf(data = qld_shp, fill = NA, color = "#252525", linewidth = 0.8) +
+	geom_sf(data = sa_shp, fill = NA, color = "#252525", linewidth = 0.8) +
+	geom_sf(data = tas_shp, fill = NA, color = "#252525", linewidth = 0.8) +
+	geom_sf(data = vic_shp, fill = NA, color = "#252525", linewidth = 0.8) +
+	geom_sf(data = wa_shp, fill = NA, color = "#252525", linewidth = 0.8) +
+	geom_sf(data = bounding_box, fill = NA, color = "steelblue", linewidth = 1.5) +
+	theme_void() +
+	coord_sf(xlim = c(113, 154), ylim = c(-43, -9))
+```
+
+Plot the inset separately (to be placed manually)
+```{r}
+png("map_inset.png", units = "cm", width = 10, height = 10, res = 300)
+suppressWarnings(print(myfullinset))
+invisible(dev.off())
+```
+
+Create the base map with ggplot2
+```{r}
+mymap <- ggplot(data = basemap) +
+	geom_sf(colour = "grey", fill = "#efefef") +
+	geom_sf(data = basemap_outline, fill = NA) +
+	geom_sf(data = distributions, cex = 2,
+		colour = distributions$Colour, shape = 19) +
+	geom_sf(data = locations, cex = 1,
+		fill = "#000000", shape = 19) +
+	annotation_scale(location = "br", width_hint = 0.25, text_cex = 1, text_family = "Arial") +
+	xlab(NULL) +
+	ylab(NULL) +
+	theme(panel.grid.major = element_line(color = "#ffffff", linetype = "solid"),
+		panel.background = element_rect(fill = "#ffffff"),
+		panel.border = element_rect(color = "black", fill = NA),
+		axis.ticks = element_line(color = "#000000"),
+		axis.text = element_text(family = "Arial", size = 12, color = "#000000")) +
+	coord_sf(xlim = xlimits, ylim = ylimits, expand = FALSE)
+```
+
+Preview
+```{r}
+suppressWarnings(print(mymap))
+```
+
+For adding labels and insets manually, create an unlabelled output  
+```{r}
+png("unlabelled_map.png", units = "cm", width = output_width, height = output_height, res = 600)
+suppressWarnings(print(mymap))
+invisible(dev.off())
+```
+
+For checking and creating labels, create a combination map  
+```{r}
+combo_map <- mymap +
+	geom_sf_label(data = locations,
+		aes(label = Label, geometry = geometry, colour = Label, size = 5),
+		family = "Arial",
+		show.legend = FALSE) +
+ 	scale_colour_manual(values = setNames(locations$Colour, locations$Label))
+```
+
+Alternatively, use the ggrepel package to better see the labels  
+```{r}
+suppressMessages(library(ggrepel))
+combo_map <- mymap +
+	geom_label_repel(data = locations,
+		aes(label = Label, geometry = geometry, colour = Label, size = 5),
+		stat = "sf_coordinates",
+		max.overlaps = 20,
+		min.segment.length = 0,
+		label.padding = 0.2,
+		point.padding = 0,
+		family = "Arial",
+		show.legend = FALSE) +
+	scale_colour_manual(values = setNames(locations$Colour, locations$Label))
+```
+
+Preview the map as it is  
+```{r}
+suppressWarnings(print(combo_map))
+```
+
+Plot a png for simple reference   
+```{r}
+png("labelled_map.png", width = output_width, height = output_height, units = "cm", res = 600)
+suppressWarnings(print(combo_map))
+invisible(dev.off())
+```
