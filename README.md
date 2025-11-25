@@ -1,4 +1,4 @@
-# Adenanthos
+# Adenanthos_eyrei
 Assembly and analysis of genome skimming data for resolving the identity of *Adenanthos eyrei*
 
 This repository contains the steps and scripts used for analysing genome skimming data for the paper "_____" (doi: ____)  
