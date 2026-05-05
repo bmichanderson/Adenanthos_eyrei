@@ -62,7 +62,8 @@ From: ubuntu:20.04
 
 
 	# install Chloe
-	git clone https://github.com/ian-small/chloe
+	git clone -b develop_b https://github.com/bmichanderson/Chloe.jl.git
+	mv Chloe.jl chloe
 	git clone https://github.com/ian-small/chloe_references
 	cd chloe
 	julia --project=. -e 'using Pkg; Pkg.instantiate()'
