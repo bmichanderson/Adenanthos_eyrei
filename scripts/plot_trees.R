@@ -2,6 +2,8 @@
 # Author: B.M. Anderson
 # Date: 16 Mar 2020
 # Modified: Nov 2023 (simplified and made more dependent on input text files), Sep 2024
+#	Feb 2026 (added cladogram option and associated rooting without edge lengths)
+#	May 2026 (added unrooted tree display as the default and "radial" and "fan" options; removed svg option)
 # Description: plot input Newick trees with ape, potentially rooting them
 #######################
 
@@ -23,7 +25,11 @@ help <- function(help_message) {
 		cat("\t-l\tLabels to title the trees in a text file (one per line, same order as the files) [optional]\n")
 		cat("\t-o\tOutgroup sampleIDs to use for rooting in a text file (one per line) [optional]\n")
 		cat("\t-s\tSampleIDs, display names, and taxa in a text file (tab separated, one per line) [optional]\n")
-		cat("\t-svg\tFlag for whether to output an SVG file for each tree [default: do not]\n\n")
+		cat("\t-w\tFlag for whether to write the tips in the order plotted, from base of tree up\n")
+		cat("\t\tNote: this only works for rooted trees (with outgroups specified)\n")
+		cat("\t-clado\tFlag for whether to plot as cladograms (no meaning to branch lengths) [default: do not]\n")
+		cat("\t-type\tType of tree to plot: \"r{adial}\", \"f{an}\", \"p{hylogram}\" or \"u{nrooted}\" [optional]\n")
+		cat("\t\tNote that \"phylogram\" or \"unrooted\" are default if not specified and depending on outgroup\n\n")
 	} else {
 	cat(help_message)
 	}
@@ -47,7 +53,10 @@ if (length(args) == 0) { # nolint
 	outgroup_file <- ""
 	samples_present <- FALSE
 	samples_file <- ""
-	svg_out <- FALSE
+	write_tips <- FALSE
+	plot_clado <- FALSE
+	type_present <- FALSE
+	type <- "phylogram"
 	for (index in seq_len(length(args))) {
 		if (args[index] == "-b") {
 			bootstrap <- as.numeric(args[index + 1])
@@ -68,8 +77,14 @@ if (length(args) == 0) { # nolint
 			samples_present <- TRUE
 			samples_file <- args[index + 1]
 			catch <- FALSE
-		} else if (args[index] == "-svg")  {
-			svg_out <- TRUE
+		} else if (args[index] == "-w")  {
+			write_tips <- TRUE
+		} else if (args[index] == "-clado")  {
+			plot_clado <- TRUE
+		} else if (args[index] == "-type")  {
+			type_present <- TRUE
+			type <- args[index + 1]
+			catch <- FALSE
 		} else {
 			if (catch) {
 				catch_args[extra] <- args[index]
@@ -89,7 +104,7 @@ cat("Bootstrap threshold for node label printing is", bootstrap, "\n")
 
 # read in and parse the files
 if (colours_present) {
-	colour_table <- read.table(colours_file, sep = "\t", header = FALSE)
+	colour_table <- read.table(colours_file, sep = "\t", header = FALSE, as.is = TRUE)
 }
 
 if (labels_present) {
@@ -136,22 +151,44 @@ if (labels_present) {
 # root the trees if outgroups are present
 if (outgroup_present) {
 	for (index in seq_len(length(tree_list))) {
-		if (sum(outgroups %in% tree_list[[index]]$tip.label) > 0) {
-			these_outgroups <- outgroups[outgroups %in% tree_list[[index]]$tip.label]
-			if (is.monophyletic(tree_list[[index]], as.character(these_outgroups))) {
-				rootnode <- getMRCA(tree, as.character(these_outgroups))
-				position <- 0.5 * tree$edge.length[which(tree$edge[, 2] == rootnode)]
-				rooted_tree <- reroot(tree, rootnode, position, edgelabel = TRUE)
-				tree_list[[index]] <- rooted_tree
+		tree <- tree_list[[index]]
+		if (sum(outgroups %in% tree$tip.label) > 0) {
+			these_outgroups <- outgroups[outgroups %in% tree$tip.label]
+			if (length(these_outgroups) > 1) {
+				if (is.monophyletic(tree, as.character(these_outgroups))) {
+					rootnode <- getMRCA(tree, as.character(these_outgroups))
+					if (plot_clado) {
+						rooted_tree <- root(tree, node = rootnode,
+							resolve.root = TRUE, edgelabel = TRUE)
+					} else {
+						rootnode <- getMRCA(tree, as.character(these_outgroups))
+						position <- 0.5 * tree$edge.length[which(tree$edge[, 2] == rootnode)]
+						rooted_tree <- reroot(tree, rootnode, position, edgelabel = TRUE)
+					}
+					tree_list[[index]] <- rooted_tree
+				} else {
+					cat("Tree", basename(catch_args[[index]]),
+						"does not have monophyletic outgroups, so it is not rooted\n")
+				}
 			} else {
-				cat("Tree", basename(catch_args[[index]]),
-					"does not have monophyletic outgroups, so it is not rooted\n")
+				if (plot_clado) {
+					rooted_tree <- root(tree, as.character(these_outgroups), resolve.root = TRUE,
+						edgelabel = TRUE)
+				} else {
+					tip_number <- which(tree$tip.label == these_outgroups)
+					rootnode <- tree$edge[tree$edge[, 2] == tip_number, 1]
+					position <- 0.5 * tree$edge.length[which(tree$edge[, 2] == rootnode)]
+					rooted_tree <- reroot(tree, rootnode, position, edgelabel = TRUE)
+				}
+				tree_list[[index]] <- rooted_tree
 			}
 		} else {
 			cat("Tree", basename(catch_args[[index]]),
 				"has no outgroups, so it is not rooted\n")
 		}
 	}
+} else {
+	cat("No outgroup(s) specified, so assuming unrooted tree(s)\n")
 }
 
 
@@ -211,46 +248,104 @@ if (samples_present) {
 }
 
 
+# Set tree type based on user input
+if (type_present) {
+	if (startsWith(type, "r")) {
+		type <- "radial"
+		label_dir <- "axial"
+	} else if (startsWith(type, "f")) {
+		type <- "fan"
+		label_dir <- "axial"
+	} else if (startsWith(type, "p")) {
+		type <- "phylogram"
+		label_dir <- "horizontal"
+	} else if (startsWith(type, "u")) {
+		type <- "unrooted"
+		label_dir <- "axial"
+	} else {
+		cat("Type not recognised; plotting a phylogram\n")
+	}
+} else if (outgroup_present) {
+	type <- "phylogram"
+	label_dir <- "horizontal"
+} else {
+	type <- "unrooted"
+	label_dir <- "axial"
+}
+
+
 # Plot trees
 max_height <- max(c(max_tips / 5, 12))
 
 pdf("trees.pdf", family = "ArialMT", width = (2 * max_height / 3), height = max_height)
-cat("Plotting", length(tree_list), "trees to pdf\n")
+cat("Plotting", length(tree_list), "tree(s) to pdf\n")
 for (index in seq_len(length(tree_list))) {
-	plot.phylo(ladderize(tree_list[[index]], right = FALSE),
-		no.margin = FALSE,
-		font = 1,
-		edge.width = 2,
-		label.offset = max(nodeHeights(tree)) / 200,
-		tip.col = tip_colours[[index]],
-		main = labels[[index]])
-	add.scale.bar(x = mean(par("usr")[1:2]),
-		y = par("usr")[3] + 1,
-		font = 1, lwd = 2)
-	drawSupportOnEdges(tree_list[[index]]$node.label,
-		adj = c(0.5, -0.5),
-		frame = "none")
-}
-invisible(dev.off())
+	tree <- tree_list[[index]]
 
-if (svg_out) {
-	for (index in seq_len(length(tree_list))) {
-		svg(paste0("tree_", index, ".svg"), family = "ArialMT",
-			width = (2 * max_height / 3), height = max_height)
-		cat("Plotting Tree", basename(catch_args[[index]]), "to svg\n")
-		plot.phylo(ladderize(tree_list[[index]], right = FALSE),
-			no.margin = FALSE,
-			font = 1,
-			edge.width = 2,
-			label.offset = max(nodeHeights(tree)) / 200,
-			tip.col = tip_colours[[index]],
-			main = labels[[index]])
-		add.scale.bar(x = mean(par("usr")[1:2]),
-			y = par("usr")[3] + 1,
-			font = 1, lwd = 2)
-		drawSupportOnEdges(tree_list[[index]]$node.label,
+	if (outgroup_present) {		# tree has been rooted
+		plot_tree <- ladderize(tree, right = FALSE)
+	} else {
+		plot_tree <- tree
+	}
+
+	if (plot_clado) {
+		edge_use <- FALSE
+		lab_off <- 0.1
+		draw_scale <- FALSE
+	} else {
+		edge_use <- TRUE
+		lab_off <- max(nodeHeights(tree)) / 200
+		draw_scale <- TRUE
+	}
+
+	if (type == "fan") {
+		no_margin <- TRUE
+		main_title <- paste0("\n", labels[[index]])
+	} else {
+		no_margin <- FALSE
+		main_title <- labels[[index]]
+	}
+
+	plot.phylo(plot_tree,
+		type = type,
+		no.margin = no_margin,
+		font = 1,
+		use.edge.length = edge_use,
+		edge.width = 2,
+		label.offset = lab_off,
+		lab4ut = label_dir,
+		tip.col = tip_colours[[index]],
+		main = main_title)
+
+	if (is.null(tree$node.label)) {
+		cat("No node labels detected\n")
+	} else {
+		drawSupportOnEdges(tree$node.label,
 			adj = c(0.5, -0.5),
 			frame = "none")
-		invisible(dev.off())
+	}
+
+	if (draw_scale) {
+		if ( type == "phylogram" ) {
+			add.scale.bar(x = mean(par("usr")[1:2]),
+				y = par("usr")[3] + 1,
+				font = 1, lwd = 2)
+		} else {
+			add.scale.bar(font = 1, lwd = 2)
+		}
+	}
+
+	if (write_tips && outgroup_present) {
+		lad_tree <- plot_tree
+		# determine which edges are tips and get the order
+		is_tip <- lad_tree$edge[, 2] <= length(lad_tree$tip.label)
+		ordered_tips <- lad_tree$edge[is_tip, 2]
+		# get the tips in order of plotting
+		output_ordered_ids <- lad_tree$tip.label[ordered_tips]
+		# write to a file
+		connection <- file(paste0("tips_", index, ".txt"))
+		writeLines(output_ordered_ids, connection)
+		close(connection)
 	}
 }
+invisible(dev.off())
