@@ -6,6 +6,9 @@ new data available August 2024
 new data available March 2025  
 
 These notes describe the assembly and analysis of *Adenanthos* genome skimming data generated to sort out the taxonomic status of *Adenanthos eyrei* E.C.Nelson  
+Scripts are run either on a supercomputer (e.g. `*.sbatch` scripts) or laptop, but are assumed to be in the working directory or PATH  
+For array scripts, ensure the shell script being called is executable  
+Paths to files and locations used on the supercomputer will not be relevant to other users  
 
 # Data
 The only known collection of *Adenanthos eyrei* (the holotype E.C. Nelson ANU 17044 -- CANB 237043) was sampled  
@@ -18,7 +21,8 @@ A putative hybrid sample (E.C. Nelson ANU 16981 -- PERTH 01711202) was later als
 Further sequencing of fresh samples was done similarly, but with less effort (smaller files)  
 Library preparation used the Illumina DNA Prep (M) Tagmentation kit (20060059) (using Nextera adapters)  
 
-All data is now stored on the DBCA Microsoft Azure Storage account "floragenetics"  
+Data is stored on a DBCA Microsoft Azure Storage account  
+Skip these steps if downloading from another location  
 To view file info, use the Azure Command Line Interface
 ```bash
 az login --use-device-code
@@ -35,16 +39,17 @@ Cut the filenames from the resulting text file
 ```bash
 grep fastq.gz data.txt | cut -f 1 -d " " | cut -f 2 -d "/" > files.txt
 ```
-The list of file names can be uploaded to Setonix for transfer  
+The list of file names can be uploaded to the supercomputer for transfer  
 
-Following advice, I have downloaded the AzCopy binary to my software folder on Setonix: `/software/projects/pawsey0220/anderson/software/azcopy/azcopy`, then I created a symbolic link to it in my `~/bin/` directory, so I can launch anywhere with `azcopy`  
+Download a copy of the binary for AzCopy onto the supercomputer, and put it in your path as `azcopy`  
+I created a symbolic link to it in my `~/bin/` directory, so I can launch anywhere  
 
 Create a `samples.txt` file with the names of all samples (should match read file names before first underscore), one per line  
-Upload it to Setonix under a directory `Adenanthos`  
+Upload it to the supercomputer under a directory `Adenanthos`  
 
 To copy the files in `files.txt`, run an interactive job from a new folder `Adenanthos/raw` with the `files.txt` file in it
 ```bash
-salloc -p copy -n 1 -N 1 -c 4 --mem=8G -A pawsey0220 --time=01:00:00
+salloc -p copy -n 1 -N 1 -c 4 --mem=8G -A pawsey0220 --time=04:00:00
 # wait for it to start...
 keyctl session workaround		# starts a new keyctl session
 azcopy login
@@ -69,32 +74,32 @@ exit
 ## Quality assessment and trimming
 Run FastQC v. 0.11.9 on the raw data  
 ```bash
-sbatch /software/projects/pawsey0220/anderson/scripts/fastqc.sbatch *.gz
+sbatch fastqc.sbatch *.gz
 ```
 
 Results are different for two groups of samples:  
 The herbarium samples (HERB1 and HERB2) show high amounts of Illumina adapter, non-random bases for the first 9 bp, and some issues with quality at the ends of reads  
 The fresh samples (the rest) typically show small amounts of Nextera Transposase adapter and non-random bases for the first 14 bp  
 
-Run Illumina QC steps, removing the first 9/14 bp of reads, trimming adapters and correcting errors  
+Run Illumina QC steps, removing the first 9/14 bp of reads, trimming adapters and for quality, and correcting errors  
 (from a new `Adenanthos/qc` folder)
 ```bash
 ln -s /scratch/pawsey0220/anderson/Adenanthos/raw/*.gz .
 
 # for the fresh samples (74 samples), run an array of jobs
 rm HERB*.gz
-cp /software/projects/pawsey0220/anderson/scripts/illumina_qc.sh ./illumina_qc_fresh.sh
+cp illumina_qc.sh illumina_qc_fresh.sh
 # modify the copy of illumina_qc.sh to trim 14 bp, turn off deduplication, and include Nextera adapters:
 # adapter_r1="CTGTCTCTTATACACATCTGACGCTGCCGACGA"
 # adapter_r2="CTGTCTCTTATACACATCTCCGAGCCCACGAGAC"
-cp /software/projects/pawsey0220/anderson/scripts/illumina_qc_array.sbatch .
+
 # modify the array sbatch to match how many samples (pairs of files = 74, so set 0-73) to analyse
 # also update it to execute the script illumina_qc_fresh.sh
 sbatch illumina_qc_array.sbatch
 
 # for the two herbarium samples, run separately afterwards
 ln -s /scratch/pawsey0220/anderson/Adenanthos/raw/HERB*.gz .
-cp /software/projects/pawsey0220/anderson/scripts/illumina_qc.sh ./illumina_qc_HERB.sh
+cp illumina_qc.sh illumina_qc_HERB.sh
 # modify the script to turn off deduplication
 cp illumina_qc_array.sbatch illumina_qc_array_HERB.sbatch
 # modify the array sbatch to match how many samples (pairs of files = 2, so set 0-1) to analyse
@@ -114,16 +119,17 @@ done
 
 Run another FastQC
 ```bash
-sbatch /software/projects/pawsey0220/anderson/scripts/fastqc.sbatch */*.gz
+sbatch fastqc.sbatch */*.gz
 ```
 
 ## Downsampling
 Given the large number of reads present for the herbarium specimens (c. 170 M read pairs), downsample for the initial SPAdes assembly  
 To do so, specify an approximate number of reads (80 M = 40 M read pairs) and prioritize longer reads  
 ```bash
+# ensure the downsample.sbatch script is in the Adenanthos/qc directory
 for sample in HERB1 HERB2; do
 cd "$sample"/
-sbatch /software/projects/pawsey0220/anderson/scripts/downsample.sbatch -1 "$sample"_R1.fastq.gz \
+sbatch ../downsample.sbatch -1 "$sample"_R1.fastq.gz \
 -2 "$sample"_R2.fastq.gz -a 80000000 -r yes
 cd ..
 done
@@ -139,8 +145,7 @@ From a directory `Adenenthos/assembly` with links to the cleaned reads, run an a
 ```bash
 ln -s /scratch/pawsey0220/anderson/Adenanthos/qc/*/*.gz .
 rm HERB{1,2}_R{1,2}.fastq.gz	# remove links to the full size files, leaving the downsampled ones
-cp /software/projects/pawsey0220/anderson/scripts/spades.sh .
-cp /software/projects/pawsey0220/anderson/scripts/spades_array.sbatch .
+# two scripts are needed in the directory: spades.sh and spades_array.sbatch
 # modify the array script to match how many samples to assemble (76, so 0-75)
 sbatch spades_array.sbatch
 ```
@@ -172,8 +177,8 @@ From a new directory `Adenanthos/plastome`, download the GetOrganelle databases 
 ```bash
 salloc -p copy -n 1 -N 1 -c 4 --mem=8G -A pawsey0220 --time=01:00:00
 module load singularity/4.1.0-slurm
-container="/software/projects/pawsey0220/anderson/singularity-containers/getorganelle.sif"
-singularity exec -H "$(pwd)" "$container" get_organelle_config.py --config-dir "$(pwd)"/.GetOrganelle --add embplant_pt,embplant_mt
+# needs the getorganelle.sif container in the directory (or give it the path)
+singularity exec -H "$(pwd)" getorganelle.sif get_organelle_config.py --config-dir "$(pwd)"/.GetOrganelle --add embplant_pt,embplant_mt
 # wait until it finishes (about 30 sec)
 exit
 ```
@@ -182,8 +187,7 @@ This puts the databases in the folder `.GetOrganelle` in the current directory
 Create a list of folder paths to the SPAdes assemblies, then launch plastome assemblies  
 ```bash
 echo /scratch/pawsey0220/anderson/Adenanthos/assembly/*/ | tr -s ' ' '\n' > spades_assemblies.txt
-cp /software/projects/pawsey0220/anderson/scripts/plastome_from_assembly.sh .
-cp /software/projects/pawsey0220/anderson/scripts/plastome_array.sbatch .
+# two scripts are needed in the working directory: plastome_from_assembly.sh and plastome_array.sbatch
 # modify the array script for the number of samples (76, so specify 0-75)
 sbatch plastome_array.sbatch spades_assemblies.txt
 ```
@@ -217,25 +221,25 @@ Download the `reference.fasta` to reformat it using matches to known plastid gen
 Pull out the first fasta and annotate with Chloe (either via Singularity container or at GeSeq online)  
 ```bash
 grep ">" -A1 reference.fasta | head -n 2 > 1.fasta
-singularity run -H "$(pwd)" ~/singularity-containers/chloe.sif annotate --reference=/chloe_references -r cp --gbk --no-gff 1.fasta
+singularity run -H "$(pwd)" chloe.sif annotate --reference=/chloe_references -r cp --gbk --no-gff 1.fasta
 ```
 Extract two reference gene sequences from `1.chloe.gbk` for orienting consistently  
 (in order for the script to work, `  ORGANISM  Adenanthos` needs to be manually added as a second line to the Chloe output, and the first line needs to have spaces adjusted -- see Annotation section below)
 *psbA* is typically near the start of the LSC and in reverse orientation  
 *ccsA* is typically in the SSC and in the forward orientation  
 ```bash
-python3 ~/scripts/genbank_parse.py -g psba 1.chloe.gbk
+python3 genbank_parse.py -g psba 1.chloe.gbk
 mv Adenanthos_extract.fasta psba.fasta
-python3 ~/scripts/genbank_parse.py -g ccsa 1.chloe.gbk
+python3 genbank_parse.py -g ccsa 1.chloe.gbk
 mv Adenanthos_extract.fasta ccsa.fasta
 ```
 
 To enable alignment and consensus generation, orient assemblies consistently  
 The script to do this requires BLAST installed  
 ```bash
-python3 ~/scripts/fasta_splitting.py reference.fasta
+python3 fasta_splitting.py reference.fasta
 for ref in {1..9}*.fasta; do
-bash ~/scripts/reform_cp.sh "$ref" psba.fasta ccsa.fasta
+bash reform_cp.sh "$ref" psba.fasta ccsa.fasta
 mv new_cp.fasta "$ref"
 done
 ```
@@ -246,7 +250,7 @@ After that finishes, generate a consensus sequence of the alignment
 cat {1..9}*.fasta > reference.fasta
 mafft --auto --thread 8 reference.fasta > aligned.fasta
 # manually check that it looks OK
-python3 ~/scripts/consensus.py -t 0.1 aligned.fasta
+python3 consensus.py -t 0.1 aligned.fasta
 mv consensus.fasta reference.fasta && rm aligned.fasta {1..9}*.fasta
 ```
 Upload the new `reference.fasta` to the folder with plastome assemblies (`Adenanthos/plastome`)
@@ -267,9 +271,7 @@ rm HERB{1,2}_R{1,2}.fastq.gz
 for sample in $(cat ../samples.txt); do
 paste <(echo ${sample}) <(echo "$(pwd)"/reference.fasta) >> unicycler_file.txt
 done
-# copy over the scripts
-cp /software/projects/pawsey0220/anderson/scripts/unicycler.sh .
-cp /software/projects/pawsey0220/anderson/scripts/unicycler_array.sbatch .
+# need two scripts present: unicycler.sh and unicycler_array.sbatch
 # modify the array script to match how many samples to assemble (76, so 0-75)
 sbatch unicycler_array.sbatch unicycler_file.txt
 ```
@@ -290,7 +292,8 @@ It should start on one of the LSC strands and cross the IR twice
 If there are multiple paths available, choose the higher depth option  
 Output as `{sample}_assembly.fasta`  
 
-Some samples showed indications of lower depth alternative sequences (deleted to form the circles), which may indicate contamination or transfer to another part of the cell  
+Some samples showed indications of lower depth alternative sequences (deleted to form the circles),  
+which may indicate contamination or transfer to another part of the cell  
 
 A complete circle could not be recovered for one sample (FOR3-01)  
 Run again, this time mapping to the circular assembly recovered by GetOrganelle for that sample (rather than the consensus reference)  
@@ -302,7 +305,7 @@ Map reads for all samples to assess how clean the assemblies are and if there ar
 First, reform each of the assemblies using the references genes
 ```bash
 for sample in $(cat ../samples.txt); do
-bash ~/scripts/reform_cp.sh "$sample"_assembly.fasta psba.fasta ccsa.fasta
+bash reform_cp.sh "$sample"_assembly.fasta psba.fasta ccsa.fasta
 sed "s/^>.*/>${sample} plastome/" new_cp.fasta > "$sample"_assembly.fasta
 rm new_cp.fasta
 done
@@ -312,7 +315,7 @@ For mapping and ensuring there is coverage across the boundaries between the IR 
 Create a copy of the plastome (remembering that any coordinates will need to be adjusted accordingly)  
 ```bash
 for sample in $(cat ../samples.txt); do
-python3 ~/scripts/extend_circle.py "$sample"_assembly.fasta -b 300
+python3 extend_circle.py "$sample"_assembly.fasta -b 300
 mv new_contig.fasta "$sample"_assembly_map.fasta
 done
 ```
@@ -333,8 +336,7 @@ done
 
 Copy over the scripts, adjust for the correct number of samples in the array script, then launch mapping
 ```bash
-cp /software/projects/pawsey0220/anderson/scripts/mapping.sh .
-cp /software/projects/pawsey0220/anderson/scripts/mapping_array.sbatch .
+# need two scripts in the working directory: mapping.sh and mapping_array.sbatch
 # modify the array script to match how many samples to map (76, so 0-75)
 sbatch mapping_array.sbatch mapping_file.txt
 ```
@@ -342,8 +344,7 @@ Took about 20 sec to 3 min per sample
 
 Run a summary of the mapping using Samtools
 ```bash
-cp /software/projects/pawsey0220/anderson/scripts/samtools_summary.sh .
-cp /software/projects/pawsey0220/anderson/scripts/samtools_array.sbatch .
+# need two scripts in the working directory: samtools_summary.sh and samtools_array.sbatch
 # modify the array script to match how many samples to map (76, so 0-75)
 # ensure the samtools_summary.sh uses min_depth=15, het_fraction=0.4, call_fraction=0.6
 sbatch samtools_array.sbatch -f ../../samples.txt -e 300
@@ -355,7 +356,7 @@ Concatenate the summary files together for input to a spreadsheet
 index=1
 for sample in $(cat ../../samples.txt); do
 if [ $index == 1 ]; then
-	head -n 1 "$sample"/"$sample"_samtools_summary.txt > samtools_overall.txt
+head -n 1 "$sample"/"$sample"_samtools_summary.txt > samtools_overall.txt
 fi
 tail -n 1 "$sample"/"$sample"_samtools_summary.txt >> samtools_overall.txt
 index=$((index + 1))
@@ -377,7 +378,8 @@ Examining the alignment indicates the het sites are not phylogenetically informa
 Looking at other samples without those hets called suggests the sequence is sometimes present at lower depth  
 It is possible the sequence represents a transfer to the mitogenome or nuclear genome  
 
-One site in the SSC consistently appeared to be heterozygous in many samples, so it was scored as heterozygous even when found below the threshold (0.4) in other samples  
+One site in the SSC consistently appeared to be heterozygous in many samples,  
+so it was scored as heterozygous even when found below the threshold (0.4) in other samples  
 
 One issue concerns populations SER1 and SER2, where there are indications of an assembly error near the junction of the SSC and IRs  
 (using the extended mapping coordinates, so subtract 300 for the assembly coordinates)  
@@ -416,7 +418,7 @@ Since the assembly fasta files are named as: ">sample plastome", use sample as t
 To delete a base, use 'C' '-'; to insert, use 'T' 'TG'  
 ```bash
 for fasta in *_assembly.fasta; do
-python3 ~/scripts/bp_alter.py -f $fasta -p positions.txt
+python3 bp_alter.py -f $fasta -p positions.txt
 mv output_alter.fasta ${fasta/assembly/mod}
 done
 ```
@@ -424,7 +426,7 @@ done
 If wanting to check the new assemblies, create new mapping references
 ```bash
 for sample in $(cat ../samples.txt); do
-python3 ~/scripts/extend_circle.py "$sample"_mod.fasta -b 300
+python3 extend_circle.py "$sample"_mod.fasta -b 300
 mv new_contig.fasta "$sample"_mod_map.fasta
 done
 ```
@@ -447,14 +449,15 @@ for sample in $(cat ../samples.txt); do mv *"$sample"*.gb "$sample".gb; done
 
 *Preferred option*
 If using Chloe via the Singularity container (latest development version -- unversioned), the output needs to be adjusted after running  
+**NOTE** some of the changes are already implemented in a development branch of a fork of the Chloe repository on my GitHub  
 Chloe can output GenBank and EMBL flat files using the GenomicAnnotations Julia package (https://github.com/BioJulia/GenomicAnnotations.jl)  
 First, run the annotation, generating GenBank and EMBL files
 ```bash
-singularity run -H "$(pwd)" ~/singularity-containers/chloe.sif annotate \
+singularity run -H "$(pwd)" chloe.sif annotate \
 --reference=/chloe_references --no-transform -r cp --gbk --embl --no-gff *assembly.fasta
 ```
 
-Adjust the header lines in the GenBank files to the format expected by Biopython (**NOTE: this is no longer required if Ian accepts my pull request**)
+Adjust the header lines in the GenBank files to the format expected by Biopython (**NOTE: this is no longer required if using my fork**)
 ```bash
 IFS=" "
 for gbfile in *.gbk; do
@@ -489,8 +492,8 @@ sed -i '1 a SOURCE      chloroplast Adenanthos forrestii\n  ORGANISM  Adenanthos
 sed -i '4 aFT   source          1..??\nFT                   /organism="Adenanthos forrestii"\nFT                   /mol_type="genomic DNA"' "$sample"_*.embl
 done
 for sample in $(grep GLA samples.txt); do
-sed -i '1 a SOURCE      chloroplast Adenanthos glabrescens\n  ORGANISM  Adenanthos glabrescens subsp. exasperatus' "$sample"_*.gbk
-sed -i '4 aFT   source          1..??\nFT                   /organism="Adenanthos glabrescens subsp. exasperatus"\nFT                   /mol_type="genomic DNA"' "$sample"_*.embl
+sed -i '1 a SOURCE      chloroplast Adenanthos glabrescens\n  ORGANISM  Adenanthos glabrescens' "$sample"_*.gbk
+sed -i '4 aFT   source          1..??\nFT                   /organism="Adenanthos glabrescens"\nFT                   /mol_type="genomic DNA"' "$sample"_*.embl
 done
 for sample in $(grep HERB samples.txt); do
 sed -i '1 a SOURCE      chloroplast Adenanthos eyrei\n  ORGANISM  Adenanthos eyrei' "$sample"_*.gbk
@@ -517,10 +520,10 @@ done
 Submitting any plastomes to GenBank requires altering the GenBank flat files by extracting the features into a table with specific formatting  
 This is potentially a nuisance (tools are available to convert these files, e.g. https://chlorobox.mpimp-golm.mpg.de/GenBank2Sequin.html)  
 There is the additional difficulty that Chloe omits the required feature qualifier "product", and implements "number" of introns differently  
-**Note: this is now at least partly corrected with my next pull request (if Ian accepts it)**  
+**Note: this is now at least partly corrected on my fork**  
 It also adds extraneous ones ("name", "ID", "parent") that are applicable to the GFF3 format, and adds "locus_tag", which for GenBank is added later  
 An alternative route is to submit to ENA instead of GenBank, since ENA accepts EMBL flat files (similar format to GenBank)  
-ENA asks that a locus_tag be provided, and one needs to be registered with the project before submitting (this could be search replaced perhaps)  
+ENA asks that a locus_tag be provided, and one needs to be registered with the project before submitting  
 
 Remove extraneous lines from the GenBank and ENA files
 ```bash
@@ -533,6 +536,31 @@ sed -i '/Name/d' "$sample"_*.gbk
 sed -i '/Name/d' "$sample"_*.embl
 done
 ```
+
+For each sample with cpDNA to upload, substitute the appropriate locus_tag prefix throughout  
+Also add the organelle at the start of the file
+```bash
+sed -i "s/LOCUSTAG/{tag_prefix}/" {file}.embl
+sed -i '7 aFT                   /organelle="plastid:chloroplast"' {file}.embl
+```
+
+Add lines for fields AC and DE in the flatfiles
+```bash
+sed -i '2 aAC   XXX;\nXX\nDE   {organism} plastome, Isolate {sample}\nXX' {file}.embl
+```
+
+Once the flatfile is ready, compress it with gzip
+```bash
+gzip -k {file}.embl
+```
+
+These can now be used with manifest files and the Webin-CLI to upload the annotated sequences  
+
+**NOTE** there was a problem with the way ENA process one copy of rps12 due to the way Chloe annotated it  
+It was necessary to manually correct the joining of complemented coordinates for one of the copies before upload  
+That includes the intron and the CDS as well as the gene  
+Change the structure "join(complement(A..B),complement(C..D),complement(D..E))" to  
+"complement(join(D..E),join(C..D),join(A..B))"  
 
 ## Alignments
 One option is to align across the entire plastome, another is to use only the CDS regions from the GenBank flat files  
@@ -548,12 +576,12 @@ mafft --thread 8 --auto input.fasta > aligned.fasta
 Extract CDS from the GenBank flat files
 ```bash
 # list CDS in all GenBank files
-for file in *.gbk; do python3 ~/scripts/genbank_parse.py -l CDS $file >> temp; done
+for file in *.gbk; do python3 genbank_parse.py -l CDS $file >> temp; done
 sort temp | uniq > cds_list.txt
 rm temp
 # extract the nucleotide alignments of the CDS
 for file in *.gbk; do
-python3 ~/scripts/genbank_parse.py -f cds_list.txt $file &&
+python3 genbank_parse.py -f cds_list.txt $file &&
 mv Adenanthos*_nucl_extract.fasta ${file/\.chloe\.gbk/_nucl_extract\.fasta}
 done
 # check duplicated (or more) regions (expected for ndhB, rpl2, rpl23, rps7, rps12, ycf2 in the IR)
@@ -562,14 +590,14 @@ grep ">*_[2,3,4]" *assembly_nucl_extract.fasta | cut -f 2 -d ">" | cut -f 1 -d "
 
 Remove all second copies (with "_2")
 ```bash
-python3 ~/scripts/remove_fastas.py _2 *nucl_extract.fasta
+python3 remove_fastas.py _2 *nucl_extract.fasta
 for file in mod*.fasta; do mv "$file" "${file/mod_/}"; done
 ```
 
 Compile the extracts into individual gene files, prior to aligning them
 ```bash
 # run this in a separate folder "CDS_alignment"
-python3 ~/scripts/extract_sort_comb.py ../*extract.fasta
+python3 extract_sort_comb.py ../*extract.fasta
 ```
 This produced 79 gene files, each with 76 samples (no missing)  
 
@@ -585,7 +613,7 @@ done
 
 Run translation, alignment, then back substitute the nucleotides with `pal2nal.pl` (in Singularity container)
 ```bash
-python3 ~/scripts/translate.py -c 11 *.fasta
+python3 translate.py -c 11 *.fasta
 # remove stop codons at the ends of genes
 sed -i 's/\*$//g' *_prot.fasta
 # align
@@ -594,7 +622,7 @@ mafft --auto --thread 8 "$translation" > "${translation/.fasta/.aln}"
 done
 # convert back
 for alignment in *_prot.aln; do
-singularity exec -H "$(pwd)" ~/singularity-containers/phylo.sif \
+singularity exec -H "$(pwd)" phylo.sif \
 pal2nal "$alignment" "${alignment/_prot.aln/.fasta}" -output fasta > "${alignment/prot.aln/exon_aligned.fasta}"
 done
 # rename and remove intermediate files
@@ -609,7 +637,7 @@ Convert the overall alignment to distance for generating a network
 Use the GENPOFAD distance model (shouldn't make much difference)
 ```bash
 # from where the full alignment file is
-Rscript ~/scripts/align_to_distance.R -p g aligned.fasta
+Rscript align_to_distance.R -p g aligned.fasta
 ```
 Use the resulting `dist_out.nex` to make a network with NeighborNet in SplitsTree4  
 
@@ -617,7 +645,7 @@ As another approach convert the individual gene alignments to distances for gene
 Use the GENPOFAD distance model
 ```bash
 # from the "CDS_alignment" folder
-Rscript ~/scripts/align_to_distance.R -p g *.fasta
+Rscript align_to_distance.R -p g *.fasta
 ```
 Use the resulting `dist_out.nex` to make a network with NeighborNet in SplitsTree4  
 
@@ -625,21 +653,30 @@ Use the resulting `dist_out.nex` to make a network with NeighborNet in SplitsTre
 To run a maximum likelihood phylogenetic analysis in IQ-TREE, partition by gene and codon position
 ```bash
 # from the "CDS_alignment" folder with 79 genes
-python3 ~/scripts/combine_alignments.py -f single -p CDS *.fasta
+python3 combine_alignments.py -f single -p CDS *.fasta
 mkdir mltree && cd mltree
 mv ../combine* .
 sed -i 's/=/= combine_out.fasta:/g' combine_partitions.nex
-singularity exec -H "$(pwd)" ~/singularity-containers/phylo.sif iqtree -T 2 \
+singularity exec -H "$(pwd)" phylo.sif iqtree -T 2 \
 --ufboot 1000 --sampling GENESITE -p combine_partitions.nex -m MFP --merge \
 --prefix plastome --runs 10
 ```
 
 Plot the tree if desired  
-(use FOR and HERB as outgroups for easier display, as they are on the longest branch)
+Note: it is unrooted, but looking at clade composition is easier with a "fan" tree  
+and arbitrary root on one of the species (so branch length is distance from center)  
+Note2: if desired, put taxa and colours of tips in a text file (`taxon_colours.txt`),  
+making sure to quote any HEX codes, tab-separated and one per line,  
+Also create a file with sampleIDs, display labels and taxa in another (`tree_samples.txt`)
 ```bash
-grep -E "FOR|HERB" combine_out.fasta | cut -f 2 -d ">" | cut -f 1 -d " " | sort | uniq > outgroup.txt
-Rscript ~/scripts/plot_trees.R -b 75 -o outgroup.txt plastome.treefile
+# plot unrooted
+Rscript plot_trees.R -b 75 plastome.treefile -s tree_samples.txt -c taxon_colours.txt
 mv trees.pdf plastome_tree.pdf
+
+# plot with root set at ancestor of FOR+HERB and the rest
+grep -E "FOR|HERB" combine_out.fasta | cut -f 2 -d ">" | cut -f 1 -d " " | sort | uniq > outgroup.txt
+Rscript plot_trees.R -b 75 -o outgroup.txt plastome.treefile -type fan -s tree_samples.txt -c taxon_colours.txt
+mv trees.pdf plastome_tree_fan.pdf
 ```
 
 # Nuclear ribosomal DNA
@@ -677,35 +714,35 @@ ITS1,5.8S,ITS2 (partial)	A. linearis	KM659701.1
 
 Put the accession numbers in a text file (`gb_ref_accessions.txt`), then download
 ```bash
-python3 ~/scripts/get_genbank.py gb_ref_accessions.txt
+python3 get_genbank.py gb_ref_accessions.txt
 ```
 
 First, concatenate all sequences into a single reference for blasting
 ```bash
 cat *.gb > temp
-python3 ~/scripts/genbank_to_fasta.py temp
+python3 genbank_to_fasta.py temp
 mv temp.fasta gb_refs.fasta && rm temp*
 ```
 
 Also pull out copies of *Arabidopsis* 18S, 5.8S and 26S (called "25S") for later use
 ```bash
 # list and extract rRNA from the full repeat
-python3 ~/scripts/genbank_parse.py -l rRNA Arabidopsis_thaliana_X52322.gb > temp
-python3 ~/scripts/genbank_parse.py -f temp Arabidopsis_thaliana_X52322.gb
+python3 genbank_parse.py -l rRNA Arabidopsis_thaliana_X52322.gb > temp
+python3 genbank_parse.py -f temp Arabidopsis_thaliana_X52322.gb
 # split the extract into 18S and 5.8S
-python3 ~/scripts/fasta_splitting.py Arabidopsis_nucl_extract.fasta
+python3 fasta_splitting.py Arabidopsis_nucl_extract.fasta
 mv 18s*.fasta Arabidopsis_18S.fasta
 mv 5.8s*.fasta Arabidopsis_58S.fasta
 # list and extract rRNA from the portion
-python3 ~/scripts/genbank_parse.py -l rRNA Arabidopsis_thaliana_X52320.gb > temp
-python3 ~/scripts/genbank_parse.py -f temp Arabidopsis_thaliana_X52320.gb
+python3 genbank_parse.py -l rRNA Arabidopsis_thaliana_X52320.gb > temp
+python3 genbank_parse.py -f temp Arabidopsis_thaliana_X52320.gb
 # split the extract into 5.8S and 25S
-python3 ~/scripts/fasta_splitting.py Arabidopsis_nucl_extract.fasta
+python3 fasta_splitting.py Arabidopsis_nucl_extract.fasta
 mv 25s*.fasta Arabidopsis_26S.fasta
 rm 5.8s*.fasta Arabidopsis_nucl_extract.fasta temp
 ```
 
-Upload `gb_refs.fasta` to the same folder on Setonix, then link across the assembly files
+Upload `gb_refs.fasta` to the same folder on the supercomputer, then link across the assembly files
 ```bash
 for sample in $(cat ../samples.txt); do
 ln -s /scratch/pawsey0220/anderson/Adenanthos/assembly/"$sample"/scaffolds.fasta ./"$sample"_scaffolds.fasta
@@ -715,7 +752,6 @@ done
 
 Run BLAST searches against the scaffolds to detect promising contigs
 ```bash
-cp /software/projects/pawsey0220/anderson/scripts/blast_array.sbatch .
 # modify the array script for the number of queries (76, so specify 0-75)
 sbatch blast_array.sbatch blast_file.txt
 ```
@@ -739,7 +775,7 @@ awk -F'\t|_' -v OFS='\t' '$5 > 6000 && $7 > 200 {print $1, $2 "_" $3 "_"}' summa
 # use a script to pull out fasta entries; run it in an interactive job
 salloc -p work -n 1 -N 1 -c 2 --mem=4G -A pawsey0220 --time=01:00:00
 module load python/3.11.6
-fasta_script=/software/projects/pawsey0220/anderson/scripts/fasta_extract.py
+fasta_script=fasta_extract.py
 index=1
 
 while IFS=$'\t' read -r -a myArray; do
@@ -758,7 +794,7 @@ Use a reference to re-orient the extracts to the same direction (forward 18S)
 This will also trim them to 500 bp either side of the 18S-ITS-26S piece using the references
 ```bash
 for file in *_extract.fasta; do
-bash ~/scripts/reform_ribo.sh "$file" Arabidopsis_18S.fasta Arabidopsis_26S.fasta
+bash reform_ribo.sh "$file" Arabidopsis_18S.fasta Arabidopsis_26S.fasta
 if [ -f "new_ribo.fasta" ]; then
 mv new_ribo.fasta "${file/_extract/_reform}"
 fi
@@ -784,8 +820,8 @@ Align again with MAFFT, remove sites with less than 50% data, then generate a co
 ```bash
 cat *reform.fasta > input.fasta
 mafft --auto input.fasta > aligned.fasta
-python3 ~/scripts/clean_alignment.py -p 50 aligned.fasta
-python3 ~/scripts/consensus.py aligned_clean.fasta
+python3 clean_alignment.py -p 50 aligned.fasta
+python3 consensus.py aligned_clean.fasta
 ```
 
 Rename the consensus `ribo_reference.fasta` and upload to Setonix for read mapping and assembly  
@@ -800,10 +836,8 @@ rm HERB{1,2}_R{1,2}.fastq.gz
 for sample in $(cat ../samples.txt); do
 paste <(echo ${sample}) <(echo "$(pwd)"/ribo_reference.fasta) >> unicycler_file.txt
 done
-# copy over the scripts
-cp /software/projects/pawsey0220/anderson/scripts/unicycler.sh .
+# needs two scripts present: unicycler.sh and unicycler_array.sbatch
 # modify the unicycler script to set minid=0.8 and pairlen=800 for lower strictness in mapping
-cp /software/projects/pawsey0220/anderson/scripts/unicycler_array.sbatch .
 # modify the array script to match how many samples to assemble (76, so 0-75)
 sbatch unicycler_array.sbatch unicycler_file.txt
 ```
@@ -833,7 +867,7 @@ Run a script to re-orient the pieces prior to alignment
 ```bash
 for assembly in $(ls *assembly.fasta); do
 echo "$assembly"
-bash ~/scripts/reform_ribo.sh $assembly Arabidopsis_18S.fasta Arabidopsis_26S.fasta
+bash reform_ribo.sh $assembly Arabidopsis_18S.fasta Arabidopsis_26S.fasta
 if [ -f new_ribo.fasta ]; then
 sample=$(echo ${assembly/_assembly\.fasta/})
 mv new_ribo.fasta "$sample"_reform_assembly.fasta
@@ -924,7 +958,7 @@ Run a script to re-orient the pieces prior to alignment (remove old assemblies i
 ```bash
 for assembly in $(ls *assembly.fasta); do
 echo "$assembly"
-bash ~/scripts/reform_ribo.sh $assembly Arabidopsis_18S.fasta Arabidopsis_26S.fasta
+bash reform_ribo.sh $assembly Arabidopsis_18S.fasta Arabidopsis_26S.fasta
 if [ -f new_ribo.fasta ]; then
 sample=$(echo ${assembly/_assembly\.fasta/})
 sed "s/^>.*$/>$sample/g" new_ribo.fasta > "$sample"_reform_assembly.fasta
@@ -950,7 +984,7 @@ Reform the assemblies again, this time only keeping 100 bp on either side of 18S
 rm *reform*.fasta FOR2-04_assembly.fasta
 for assembly in $(ls *assembly.fasta); do
 echo "$assembly"
-bash ~/scripts/reform_ribo.sh $assembly Arabidopsis_18S.fasta Arabidopsis_26S.fasta 100
+bash reform_ribo.sh $assembly Arabidopsis_18S.fasta Arabidopsis_26S.fasta 100
 if [ -f new_ribo.fasta ]; then
 sample=$(echo ${assembly/_assembly\.fasta/})
 sed "s/^>.*$/>$sample/g" new_ribo.fasta > "$sample"_reform_assembly.fasta
@@ -989,9 +1023,9 @@ Put the sample names in `ref_samples.txt`
 ```bash
 for sample in $(cat ref_samples.txt); do
 echo "$sample"
-bash ~/scripts/reform_ribo.sh "$sample"_reform_assembly.fasta Arabidopsis_18S.fasta Arabidopsis_26S.fasta 40
+bash reform_ribo.sh "$sample"_reform_assembly.fasta Arabidopsis_18S.fasta Arabidopsis_26S.fasta 40
 if [ -f new_ribo.fasta ]; then
-python3 ~/scripts/remove_ns.py new_ribo.fasta
+python3 remove_ns.py new_ribo.fasta
 sed "s/^>.*$/>$sample/g" mod_new_ribo.fasta > "$sample"_reform_trim_assembly.fasta
 rm *new_ribo.fasta
 fi
@@ -1033,9 +1067,8 @@ done
 
 Copy over the scripts, adjust for the correct number of samples in the array script, then launch mapping
 ```bash
-cp /software/projects/pawsey0220/anderson/scripts/mapping.sh .
+# need two scripts in the working directory: mapping.sh and mapping_array.sbatch
 # modify the mapping.sh script to allow mapping of unpaired mates (pairedonly="f")
-cp /software/projects/pawsey0220/anderson/scripts/mapping_array.sbatch .
 # modify the array script to match how many samples to map (76, so 0-75)
 sbatch mapping_array.sbatch mapping_file.txt
 ```
@@ -1043,8 +1076,7 @@ Took about 30 sec to 3 min per sample
 
 Run a summary of the mapping using Samtools, and generate a consensus for each sample
 ```bash
-cp /software/projects/pawsey0220/anderson/scripts/samtools_summary.sh .
-cp /software/projects/pawsey0220/anderson/scripts/samtools_array.sbatch .
+# need two scripts in the working directory: samtools_summary.sh and samtools_array.sbatch
 # modify the array script to match how many samples to map (76, so 0-75)
 # modify the samtools_summary.sh to use min_depth=20, het_fraction=0.3, call_fraction=0.6
 sbatch samtools_array.sbatch -f ../../samples.txt
@@ -1056,7 +1088,7 @@ Concatenate the summary files together for input to a spreadsheet
 index=1
 for sample in $(cat ../../samples.txt); do
 if [ $index == 1 ]; then
-	head -n 1 "$sample"/"$sample"_samtools_summary.txt > samtools_overall.txt
+head -n 1 "$sample"/"$sample"_samtools_summary.txt > samtools_overall.txt
 fi
 tail -n 1 "$sample"/"$sample"_samtools_summary.txt >> samtools_overall.txt
 index=$((index + 1))
@@ -1137,7 +1169,7 @@ Run the base pair altering script on the consensus sequences from the mapping to
 ```bash
 for index in 1 2 3 4; do
 for sample in $(cut -f 1 positions"$index".txt | sort | uniq); do
-python3 ~/scripts/bp_alter.py -f "$sample"_consensus.fasta -p positions"$index".txt
+python3 bp_alter.py -f "$sample"_consensus.fasta -p positions"$index".txt
 sed "s/${sample}/${sample}_${index}/g" output_alter.fasta > "$sample"_ribo"$index".fasta
 rm output_alter.fasta
 done
@@ -1160,15 +1192,14 @@ It is clear HERB1 and HERB2 are hybrids between FOR and CUN
 ## Annotation
 To annotate the rRNA portions of nrDNA, Chloe includes a "nr" option
 ```bash
-singularity run -H "$(pwd)" ~/singularity-containers/chloe.sif annotate \
+singularity run -H "$(pwd)" chloe.sif annotate \
 --no-transform -r nr --gbk --embl --no-gff *consensus.fasta
 ```
 
-For submitting to ENA, there is an online template that could be filled out per sequence  
+For submitting to ENA, upload flat files    
 The suggested format of the flat file indicates a deviation from the normal Chloe output (e.g. no "gene" features per rRNA piece)  
-I'm not sure if that means uploading with a "gene" feature will result in rejection  
 The ITS pieces are also not annotated by Chloe, although this is suggested for submission  
-Note: by default, Chloe converts ambiguous DNA bases to "A", but Chris Jackson created a pull request to correct this (not merged yet)  
+Note: by default, Chloe converts ambiguous DNA bases to "A", but Chris Jackson created a pull request to correct this (now incorporated in my fork too)  
 
 Add organism info to the flat files for submission/parsing
 ```bash
@@ -1186,8 +1217,8 @@ sed -i '1 a SOURCE      nrDNA Adenanthos forrestii\n  ORGANISM  Adenanthos forre
 sed -i '4 aFT   source          1..??\nFT                   /organism="Adenanthos forrestii"\nFT                   /mol_type="genomic DNA"' "$sample"_*.embl
 done
 for sample in $(grep GLA samples.txt); do
-sed -i '1 a SOURCE      nrDNA Adenanthos glabrescens\n  ORGANISM  Adenanthos glabrescens subsp. exasperatus' "$sample"_*.gbk
-sed -i '4 aFT   source          1..??\nFT                   /organism="Adenanthos glabrescens subsp. exasperatus"\nFT                   /mol_type="genomic DNA"' "$sample"_*.embl
+sed -i '1 a SOURCE      nrDNA Adenanthos glabrescens\n  ORGANISM  Adenanthos glabrescens' "$sample"_*.gbk
+sed -i '4 aFT   source          1..??\nFT                   /organism="Adenanthos glabrescens"\nFT                   /mol_type="genomic DNA"' "$sample"_*.embl
 done
 for sample in $(grep HERB samples.txt); do
 sed -i '1 a SOURCE      nrDNA Adenanthos eyrei\n  ORGANISM  Adenanthos eyrei' "$sample"_*.gbk
@@ -1277,13 +1308,26 @@ sed -i "16 a\ \ \ \ \ misc_RNA        $((end58s + 1))..$((start26s - 1))\n      
 done
 ```
 
+For samples to upload for nrDNA, adjust the flatfiles  
+Add lines for fields AC and DE in the flatfiles (change for each flat file that will be uploaded)
+```bash
+sed -i '2 aAC   XXX;\nXX\nDE   {organism} 18S rRNA gene, ITS1, 5.8S rRNA gene, ITS2 and 26S rRNA gene, Isolate {sample}\nXX' {file}.embl
+```
+
+Once the flatfile is ready, compress it with gzip
+```bash
+gzip -k {file}.embl
+```
+
+These can now be used with manifest files and the Webin-CLI to upload the annotated sequences  
+
 ## Distances
 Align the phased copies (ambiguities still present) and estimate genetic distances  
 ```bash
 # from the "map" folder with the consensus sequences and ribo copies
 cat *ribo*.fasta > input.fasta
 mafft --thread 8 --auto input.fasta > aligned.fasta
-Rscript ~/scripts/align_to_distance.R -p g aligned.fasta
+Rscript align_to_distance.R -p g aligned.fasta
 ```
 The output `dist_out.nex` can be use to generate a network using NeighborNet in SplitsTree4  
 
@@ -1291,15 +1335,37 @@ The output `dist_out.nex` can be use to generate a network using NeighborNet in 
 Use IQ-TREE to run a maximum likelihood phylogenetic analysis with 1000 ultrafast bootstraps (UFB) and search for best model  
 ```bash
 # in a new folder "mltree", after copying "aligned.fasta" into it
-singularity exec -H "$(pwd)" ~/singularity-containers/phylo.sif iqtree -T 1 \
+singularity exec -H "$(pwd)" phylo.sif iqtree -T 1 \
 --ufboot 1000 -m MFP --prefix ribo -s aligned.fasta --runs 10
 ```
 
 Plot the tree  
-(root on SER as a divergent and longer branch)
+Note: it is unrooted, but looking at clade composition is easier with a "fan" tree  
+and arbitrary root on one of the species (so branch length is distance from center)  
+Note2: if desired, put taxa and colours of tips in a text file (`taxon_colours.txt`),  
+making sure to quote any HEX codes, tab-separated and one per line  
+This needs a `tree_samples.txt` file to identify taxa of tips
 ```bash
-grep "SER" aligned.fasta | cut -f 2 -d ">" | sort | uniq > outgroup.txt
-Rscript ~/scripts/plot_trees.R -b 75 -o outgroup.txt ribo.treefile
+# create the samples file from the taxa present
+grep ">" aligned.fasta | sed 's/>//g' > temp
+paste <(cat temp) <(cat temp) > temp2
+sed -i '/CUN/s/$/\tcuneatus/g' temp2
+sed -i '/DOB/s/$/\tdobsonii/g' temp2
+sed -i '/FOR/s/$/\tforrestii/g' temp2
+sed -i '/GLA/s/$/\tglabrescens/g' temp2
+sed -i '/HERB/s/$/\teyrei/g' temp2
+sed -i '/ILE/s/$/\tileticos/g' temp2
+sed -i '/SER/s/$/\tsericeus/g' temp2
+mv temp2 tree_samples.txt
+
+# plot unrooted
+Rscript plot_trees.R -b 75 ribo.treefile -s tree_samples.txt -c taxon_colours.txt
+mv trees.pdf ribo_tree.pdf
+
+# plot with root set at ancestor of SER and the rest
+grep "SER" aligned.fasta | cut -f 2 -d ">" | sort | uniq > outgroup.txt  
+Rscript plot_trees.R -b 75 -o outgroup.txt ribo.treefile -type fan -s tree_samples.txt -c taxon_colours.txt
+mv trees.pdf ribo_tree_fan.pdf
 ```
 
 # Nuclear genes
@@ -1331,7 +1397,7 @@ The resulting output was named `targets_Proteaceae.fasta`
 
 Translate the targets to protein  
 ```bash
-python3 ~/scripts/translate.py targets_Proteaceae.fasta
+python3 translate.py targets_Proteaceae.fasta
 ```
 Remove any "*" stop codons at the end of sequences; two sequences had internal stop codons and were removed  
 Use the resulting `targets_Proteaceae_prot.fasta` for assembly  
@@ -1348,8 +1414,7 @@ rm reads/*down*		# get rid of the downsampled
 echo "HERB1" > samples.txt
 echo "HERB2" >> samples.txt
 cp ../targets_Proteaceae_prot.fasta .
-cp /software/projects/pawsey0220/anderson/scripts/hybpiper_array.sbatch .
-# manually change to 2 samples (0-1)
+# manually change the array script to 2 samples (0-1)
 # also double the memory per job to 128G
 sbatch hybpiper_array.sbatch -f targets_Proteaceae_prot.fasta -r reads/ -s samples.txt -t "aa"
 ```
@@ -1357,16 +1422,16 @@ The runs took about 45 minutes
 
 After the runs finish, combine results
 ```bash
-sbatch /software/projects/pawsey0220/anderson/scripts/combine_hybpiper.sbatch -d "yes"
+sbatch combine_hybpiper.sbatch -d "yes"
 ```
 
 Assess the output to make a new target file  
 ```bash
 # check for loci with retained paralogs in the "results" folder
 grep ">" paralog_seqs/*.fasta | grep ".main" | cut -f 1 -d "." | cut -f 2 -d "/" | sort | uniq > paralog_loci.txt
-#  11 loci
+# 11 loci
 # remove loci with excessive Ns (incomplete) and shorter than 300 bp
-python3 ~/scripts/seq_stats.py dna_seqs/*.fasta > temp
+python3 seq_stats.py dna_seqs/*.fasta > temp
 cat temp | grep -v Total | grep "fasta" | awk '$5 < 20 && $3 > 300' | cut -f 2 -d "/" | cut -f 1 -d "." | sort | uniq > loci.txt
 # exclude the paralogs
 grep -vf paralog_loci.txt loci.txt > keep_loci.txt
@@ -1374,15 +1439,15 @@ grep -vf paralog_loci.txt loci.txt > keep_loci.txt
 # generate consensus sequences of the two HERB samples per locus
 for locus in $(cat keep_loci.txt); do
 mafft --auto dna_seqs/"$locus".fasta > "$locus".aln
-python3 ~/scripts/consensus.py "$locus".aln
+python3 consensus.py "$locus".aln
 sed "s/^>consensus/>HERB-${locus}/" consensus.fasta >> HERB_targets_ref.fasta
 rm "$locus".aln consensus.fasta
 done
 # translate to protein residues
-python3 ~/scripts/translate.py HERB_targets_ref.fasta
+python3 translate.py HERB_targets_ref.fasta
 # remove any loci with internal stop codons "*"
 # put locus names to remove in a "temp" file after finding the "*" and noting the loci
-python3 ~/scripts/remove_fastas.py -f temp HERB_targets_ref*.fasta
+python3 remove_fastas.py -f temp HERB_targets_ref*.fasta
 for file in mod*; do mv $file ${file/mod_/}; done
 # this leaves 284 loci in the target files
 ```
@@ -1397,7 +1462,6 @@ ln -s /scratch/pawsey0220/anderson/Adenanthos/qc/*/*.gz reads/
 rm reads/*down*		# get rid of the downsampled HERB samples
 cp ../samples.txt .
 cp ../HERB_targets_ref_prot.fasta .
-cp /software/projects/pawsey0220/anderson/scripts/hybpiper_array.sbatch .
 # manually change the array script to 76 samples (0-75) and double the memory per job to 128G
 sbatch hybpiper_array.sbatch -f HERB_targets_ref_prot.fasta -r reads/ -s samples.txt -t "aa"
 ```
@@ -1406,7 +1470,7 @@ Two of the larger runs took about 40 to 60 minutes
 
 After the runs finish, combine results
 ```bash
-sbatch /software/projects/pawsey0220/anderson/scripts/combine_hybpiper.sbatch -d "yes"
+sbatch combine_hybpiper.sbatch -d "yes"
 ```
 Download the `results/combined_stats.tsv` for assessment  
 
@@ -1453,7 +1517,7 @@ align with MAFFT, then use `pal2nal.pl` (Suyama et al. 2006; http://www.bork.emb
 to convert the nucleotide files to align with the protein alignment
 ```bash
 mkdir aligned && cd aligned
-sbatch /software/projects/pawsey0220/anderson/scripts/translate_align.sbatch -f ../ -d ../../results/sample_drops.txt
+sbatch translate_align.sbatch -f ../ -d ../../results/sample_drops.txt
 ```
 
 Manually review the alignments for obvious problems and paralogy  
@@ -1475,7 +1539,7 @@ Run an initial phylogenetic analysis of the loci, followed by TreeShrink to remo
 ```bash
 cd ..
 mkdir phylo && cd phylo
-sbatch /software/projects/pawsey0220/anderson/scripts/align_phylo.sbatch -a "loci" -c "n" -con "n" -f "../aligned" -r "n"
+sbatch align_phylo.sbatch -a "loci" -c "n" -con "n" -f "../aligned" -r "n"
 ```
 
 Assess branch lengths for the loci using TreeShrink and drop outlier samples from the `filtered_exons/aligned` files
@@ -1485,7 +1549,7 @@ salloc -p work -n 1 -N 1 -c 2 --mem=4G -A pawsey0220 --time=01:00:00
 module load singularity/4.1.0-slurm python/3.11.6
 
 # run assessment
-singularity exec -H "$(pwd)" /software/projects/pawsey0220/anderson/singularity-containers/phylo.sif run_treeshrink.py \
+singularity exec -H "$(pwd)" phylo.sif run_treeshrink.py \
 -t loci.treefile -m per-gene -q 0.10 -O output_ts -o treeshrink
 
 # iterate through the loci, dropping samples detected by TreeShrink
@@ -1494,7 +1558,7 @@ index=1
 for locus in $(cat loci.txt); do
 remove_line=$(sed -n "${index}p; $((index + 1))q" treeshrink/output_ts.txt | tr -s '\t' ',' | sed 's/,$//')
 if [ ! -z "$remove_line" ]; then
-python3 /software/projects/pawsey0220/anderson/scripts/remove_fastas.py "$remove_line" ../aligned/"${locus}.fasta"
+python3 remove_fastas.py "$remove_line" ../aligned/"${locus}.fasta"
 else
 echo "locus $locus does not have taxa to remove"
 fi
@@ -1534,7 +1598,7 @@ Download the `shrunk` folder alignments for another check for any sequences that
 salloc -p work -n 1 -N 1 -c 2 --mem=4G -A pawsey0220 --time=01:00:00
 module load python/3.11.6
 # manually remove sequences using a script, e.g.
-python3 /software/projects/pawsey0220/anderson/scripts/remove_fastas.py CUN1-01,FOR1-17,FOR1-20 4932.fasta
+python3 remove_fastas.py CUN1-01,FOR1-17,FOR1-20 4932.fasta
 # (repeat for the others above)
 for file in mod_*; do
 mv "$file" "${file/mod_/}"
@@ -1545,27 +1609,28 @@ exit
 Re-run the analysis on the cleaned 104 loci in a new folder `phylo/run2`
 ```bash
 mkdir run2 && cd run2
-sbatch /software/projects/pawsey0220/anderson/scripts/align_phylo.sbatch -a "all" -c "n" -con "n" -f "../shrunk" -r "n" -p "y"
+sbatch align_phylo.sbatch -a "all" -c "n" -con "n" -f "../shrunk" -r "n" -p "y"
 ```
 
 Run concordance analysis for completeness
 ```bash
-sbatch /software/projects/pawsey0220/anderson/scripts/align_phylo.sbatch -a "none" -c "n" -con "y" -f "in_align" -r "n"
+sbatch align_phylo.sbatch -a "none" -c "n" -con "y" -f "in_align" -r "n"
 ```
 
 Calculate summary statistics on the alignments  
 ```bash
-python3 ~/scripts/seq_stats.py in_align/*.fasta > stats.txt
+python3 seq_stats.py in_align/*.fasta > stats.txt
 ```
 
 Optionally plot trees interactively with `plot_trees.rmd`; need an `outgroup.txt` file  
 Put all the SER sample names in an `outgroup.txt` file  
-Convert concordance output and astral output using scripts for reading into the plotting markdown  
+**Note**: despite using an outgroup to display them, the trees are not rooted from the analysis  
+Convert concordance output and astral output using scripts for reading into the plotting markdown
 ```bash
-python3 ~/scripts/concord_to_newick.py -t concord_gcf.cf.tree.nex -o concord_newick
-python3 ~/scripts/concord_to_newick.py -t concord_scf.cf.tree.nex -o concord_newick
-python3 ~/scripts/astral_parse.py -t astral.tre -f p -o astral
-python3 ~/scripts/astral_parse.py -t astral.tre -f q -o astral
+python3 concord_to_newick.py -t concord_gcf.cf.tree.nex -o concord_newick
+python3 concord_to_newick.py -t concord_scf.cf.tree.nex -o concord_newick
+python3 astral_parse.py -t astral.tre -f p -o astral
+python3 astral_parse.py -t astral.tre -f q -o astral
 # collapse branches with ASTRAL polytomy p-values >0.05
 nw_ed astral_poly.tre "i & b > 0.05" o > astral_poly_collapsed.tre
 ```
@@ -1573,13 +1638,13 @@ Plot the trees interactively with `plot_trees.rmd`
 
 Alternatively, plot simpler trees without concordance with `plot_trees.R`
 ```bash
-Rscript ~/scripts/plot_trees.R -b 75 -o outgroup.txt concat.treefile && mv trees.pdf concat_simple.pdf
+Rscript plot_trees.R -b 75 -o outgroup.txt concat.treefile && mv trees.pdf concat_simple.pdf
 # the astral posterior probability is the first of number/number/number on branch labels
 # reduce numbers of decimal places
 sed -E 's/([0-9]+\.[0-9][0-9][0-9])[0-9]+/\1/g' astral_p.tre > temp
 # grab the first element (possibly some scientific notation)
 sed -E 's/([0-9]+\.[0-9]+[E-]*[0-9]*)\/[0-9]+\.[0-9]+[E-]*[0-9]*\/[0-9]+\.[0-9]+[E-]*[0-9]*:/\1:/g' temp > temp2
-Rscript ~/scripts/plot_trees.R -b 0.8 -o outgroup.txt temp2 && mv trees.pdf astral_simple.pdf
+Rscript plot_trees.R -b 0.8 -o outgroup.txt temp2 && mv trees.pdf astral_simple.pdf
 rm temp*
 ```
 
@@ -1604,7 +1669,7 @@ module load python/3.11.6
 for locus in $(cat loci.txt); do
 grep ">" ../filtered_exons/phylo/run2/in_align/"$locus".fasta | cut -f 2 -d ">" > samples_"$locus".txt
 grep -vf samples_"$locus".txt ../../samples.txt > temp_drop.txt
-python3 /software/projects/pawsey0220/anderson/scripts/remove_fastas.py -f temp_drop.txt "$locus".fasta
+python3 remove_fastas.py -f temp_drop.txt "$locus".fasta
 mv mod_"$locus".fasta "$locus".fasta
 done
 rm samples_*.txt temp*
@@ -1619,7 +1684,7 @@ sed -E '/>/s/\s(.+)$//g' "$file" > temp && mv temp $file
 done
 salloc -p work -n 1 -N 1 -c 4 -A pawsey0220 --time=01:00:00
 module load python/3.11.6
-python3 /software/projects/pawsey0220/anderson/scripts/fasta_Ns_sub.py *.fasta
+python3 fasta_Ns_sub.py *.fasta
 exit
 ```
 
@@ -1629,7 +1694,7 @@ For each locus, split the individual fastas out, then move them to their own sam
 salloc -p work -n 1 -N 1 -c 4 -A pawsey0220 --time=01:00:00
 module load python/3.11.6
 for locus in $(cat loci.txt); do
-python3 /software/projects/pawsey0220/anderson/scripts/fasta_splitting.py "$locus".fasta
+python3 fasta_splitting.py "$locus".fasta
 for sample in $(grep ">" "$locus".fasta | cut -f 2 -d ">"); do
 if [ ! -d "$sample" ]; then
 mkdir "$sample"
@@ -1658,7 +1723,7 @@ Link reads, concatenate the loci together per sample, map, then generate a conse
 ```bash
 mkdir mapping && cd mapping
 ln -s /scratch/pawsey0220/anderson/Adenanthos/qc/*/*.gz .
-rm HERB*_down_*.gz		# remove the downsampled HERB reads
+rm HERB1*_down_*.gz		# remove the downsampled HERB reads
 
 # concatenate loci and make mapping file
 for sample in $(cat ../map_samples.txt); do
@@ -1666,17 +1731,14 @@ cat ../"$sample"/*.fasta > "$sample"_map_ref.fa
 paste <(echo ${sample}) <(echo ${sample}_map_ref.fa) >> mapping_file.txt
 done
 
-# copy over scripts and run mapping
-cp /software/projects/pawsey0220/anderson/scripts/mapping.sh .
+# need two scripts in the working directory: mapping.sh and mapping_array.sbatch
 # modify the mapping script to make it more strict (minid=0.95)
-cp /software/projects/pawsey0220/anderson/scripts/mapping_array.sbatch .
 # modify the array script to match how many samples to map (49, so 0-48)
 sbatch mapping_array.sbatch mapping_file.txt
 
-# after it finishes, copy over scripts for samtools and run consensus generation
-cp /software/projects/pawsey0220/anderson/scripts/samtools_summary.sh .
+# after it finishes, run consensus generation
+# need two scripts in the working directory: samtools_summary.sh and samtools_array.sbatch
 # modify the samtools_summary.sh to use min_depth=6, het_fraction=0.3, call_fraction=0.6
-cp /software/projects/pawsey0220/anderson/scripts/samtools_array.sbatch .
 # modify the array script to match how many samples to map (49, so 0-48)
 sbatch samtools_array.sbatch -f ../map_samples.txt
 ```
@@ -1703,7 +1765,7 @@ module load python/3.11.6
 
 # grab the consensus sequences and move them
 for sample in $(cat ../map_samples.txt); do
-python3 /software/projects/pawsey0220/anderson/scripts/fasta_splitting.py "$sample"/"$sample"_consensus.fasta
+python3 fasta_splitting.py "$sample"/"$sample"_consensus.fasta
 for outfasta in "$sample"-*.fasta; do
 mv "$outfasta" ../"$sample"/"${outfasta/${sample}-/consens_}"
 done
@@ -1724,20 +1786,20 @@ exit
 
 Run alignments of the loci with MAFFT
 ```bash
-cp /software/projects/pawsey0220/anderson/scripts/align_phylo.sbatch .
+cp align_phylo.sbatch .
 # modify the script for the cleaning step to remove positions with >80% gaps and keep samples regardless of missing
 sbatch align_phylo.sbatch -a "none" -c "y" -f "aligning" -r "y"
 ```
 
 Generate a distance matrix from the alignments for use with SplitsTree4
 ```bash
-Rscript ~/scripts/align_to_distance.R -p "g" in_align/*.fasta
+Rscript align_to_distance.R -p "g" in_align/*.fasta
 ```
 The resulting distance matrix is not well resolved nor particularly informative  
 It is also not substantially more resolved or different than a similar distance network based on the exons only  
 HERB1 and HERB2 are more closely associated and "nearer" to SER and CUN, but not clearly  
 
-The consensus sequences and ambiguities may be poorly recovered or uninformative at heterozygous positions(?)  
+The consensus sequences and ambiguities may be poorly recovered using this approach  
 
 Heterozygosity is nonetheless clearly different (outliers) for the HERB samples:  
 HERB samples: 1.13% heterozygosity (1.05–1.21)  
@@ -1759,7 +1821,7 @@ Launch the assembly step (step 2) of Captus
 Modify the script to use 32 cores per sample (4 samples at a time)  
 Because the samples have many reads, assemblies take a while, so split the process up into sets of 8 samples
 ```bash
-cp /software/projects/pawsey0220/anderson/scripts/captus.sbatch .
+# needs the captus.sbatch script present
 # manually modify to divide cores by 32
 
 # create the sets of samples
@@ -1811,7 +1873,7 @@ Download the HTML reports to assess assembly success and metrics
 Launch the extraction step (step 3)  
 An earlier run to look for additional markers (mode "e") failed to complete in the time limit so don't run
 ```bash
-sbatch /software/projects/pawsey0220/anderson/scripts/captus.sbatch -s 3 -t HERB_targets_ref_prot.fasta -m n
+sbatch captus.sbatch -s 3 -t HERB_targets_ref_prot.fasta -m n
 ```
 Download the HTML report to assess recovery  
 A number of loci have somewhat lower average weighted score (potentially bad fits?):  
@@ -1838,7 +1900,7 @@ Simply remove their `*captus-ext` folders in `03_extractions`
 
 Run the alignment and trimming (step 4)
 ```bash
-sbatch /software/projects/pawsey0220/anderson/scripts/captus.sbatch -s 4
+sbatch captus.sbatch -s 4
 ```
 Download the HTML report to assess alignment completeness  
 A few samples have more evident gaps and lower completeness:  
@@ -1858,7 +1920,7 @@ done
 
 Run an initial analysis of the loci to enable assessment with TreeShrink
 ```bash
-sbatch /software/projects/pawsey0220/anderson/scripts/align_phylo.sbatch -a "loci" -c "n" -con "n" -f "temp_input" -r "n"
+sbatch align_phylo.sbatch -a "loci" -c "n" -con "n" -f "temp_input" -r "n"
 ```
 
 Run assessment with TreeShrink to detect potential misassemblies or problems
@@ -1868,7 +1930,7 @@ salloc -p work -n 1 -N 1 -c 2 --mem=4G -A pawsey0220 --time=01:00:00
 module load singularity/4.1.0-slurm python/3.11.6
 
 # run assessment
-singularity exec -H "$(pwd)" /software/projects/pawsey0220/anderson/singularity-containers/phylo.sif run_treeshrink.py \
+singularity exec -H "$(pwd)" phylo.sif run_treeshrink.py \
 -t loci.treefile -m per-gene -q 0.10 -O output_ts -o treeshrink
 
 # iterate through the loci, dropping samples detected by TreeShrink
@@ -1877,7 +1939,7 @@ index=1
 for locus in $(cat loci.txt); do
 remove_line=$(sed -n "${index}p; $((index + 1))q" treeshrink/output_ts.txt | tr -s '\t' ',' | sed 's/,$//')
 if [ ! -z "$remove_line" ]; then
-python3 /software/projects/pawsey0220/anderson/scripts/remove_fastas.py "$remove_line" in_align/"${locus}.fasta"
+python3 remove_fastas.py "$remove_line" in_align/"${locus}.fasta"
 else
 echo "locus $locus does not have taxa to remove"
 fi
@@ -1896,27 +1958,28 @@ exit
 Run a second analysis using the adjusted alignment files
 ```bash
 mkdir run2 && cd run2
-sbatch --ntasks=2 --cpus-per-task=32 /software/projects/pawsey0220/anderson/scripts/align_phylo.sbatch -a "all" -c "n" -con "n" -f "../shrunk" -r "n" -p "y"
+sbatch --ntasks=2 --cpus-per-task=32 align_phylo.sbatch -a "all" -c "n" -con "n" -f "../shrunk" -r "n" -p "y"
 ```
 
 Run concordance analysis for completeness
 ```bash
-sbatch /software/projects/pawsey0220/anderson/scripts/align_phylo.sbatch -a "none" -c "n" -con "y" -f "in_align" -r "n"
+sbatch align_phylo.sbatch -a "none" -c "n" -con "y" -f "in_align" -r "n"
 ```
 
 Calculate summary statistics on the alignments  
 ```bash
-python3 ~/scripts/seq_stats.py in_align/*.fasta > stats.txt
+python3 seq_stats.py in_align/*.fasta > stats.txt
 ```
 
 Optionally plot trees interactively with `plot_trees.rmd`; need an `outgroup.txt` file  
 Put all the SER sample names in an `outgroup.txt` file  
+**Note**: despite using an outgroup to display them, the trees are not rooted from the analysis  
 Convert concordance output and astral output using scripts for reading into the plotting markdown  
 ```bash
-python3 ~/scripts/concord_to_newick.py -t concord_gcf.cf.tree.nex -o concord_newick
-python3 ~/scripts/concord_to_newick.py -t concord_scf.cf.tree.nex -o concord_newick
-python3 ~/scripts/astral_parse.py -t astral.tre -f p -o astral
-python3 ~/scripts/astral_parse.py -t astral.tre -f q -o astral
+python3 concord_to_newick.py -t concord_gcf.cf.tree.nex -o concord_newick
+python3 concord_to_newick.py -t concord_scf.cf.tree.nex -o concord_newick
+python3 astral_parse.py -t astral.tre -f p -o astral
+python3 astral_parse.py -t astral.tre -f q -o astral
 # collapse branches with ASTRAL polytomy p-values >0.05
 nw_ed astral_poly.tre "i & b > 0.05" o > astral_poly_collapsed.tre
 ```
@@ -1924,13 +1987,34 @@ Plot the trees interactively with `plot_trees.rmd`
 
 Alternatively, plot simpler trees without concordance with `plot_trees.R`
 ```bash
-Rscript ~/scripts/plot_trees.R -b 75 -o outgroup.txt concat.treefile && mv trees.pdf concat_simple.pdf
+# create the sample file from samples.txt (copy to the current directory)
+paste <(cat samples.txt) <(cat samples.txt) > temp
+sed -i '/CUN/s/$/\tcuneatus/g' temp
+sed -i '/DOB/s/$/\tdobsonii/g' temp
+sed -i '/FOR/s/$/\tforrestii/g' temp
+sed -i '/GLA/s/$/\tglabrescens/g' temp
+sed -i '/HERB/s/$/\teyrei/g' temp
+sed -i '/ILE/s/$/\tileticos/g' temp
+sed -i '/SER/s/$/\tsericeus/g' temp
+mv temp tree_samples.txt
+
+# plot unrooted, then fan
+Rscript plot_trees.R -b 75 concat.treefile -s tree_samples.txt -c taxon_colours.txt
+mv trees.pdf concat_unrooted.pdf
+Rscript plot_trees.R -b 75 -o outgroup.txt concat.treefile -type fan -s tree_samples.txt -c taxon_colours.txt
+mv trees.pdf concat_fan.pdf
+
 # the astral posterior probability is the first of number/number/number on branch labels
+python3 astral_parse.py -t astral.tre -f p -o astral
 # reduce numbers of decimal places
 sed -E 's/([0-9]+\.[0-9][0-9][0-9])[0-9]+/\1/g' astral_p.tre > temp
 # grab the first element (possibly some scientific notation)
 sed -E 's/([0-9]+\.[0-9]+[E-]*[0-9]*)\/[0-9]+\.[0-9]+[E-]*[0-9]*\/[0-9]+\.[0-9]+[E-]*[0-9]*:/\1:/g' temp > temp2
-Rscript ~/scripts/plot_trees.R -b 0.8 -o outgroup.txt temp2 && mv trees.pdf astral_simple.pdf
+# plot unrooted, then fan
+Rscript plot_trees.R -b 0.8 temp2 -s tree_samples.txt -c taxon_colours.txt
+mv trees.pdf astral_unrooted.pdf
+Rscript plot_trees.R -b 0.8 temp2 -o outgroup.txt -s tree_samples.txt -c taxon_colours.txt -type fan
+mv trees.pdf astral_fan.pdf
 rm temp*
 ```
 
@@ -1955,8 +2039,8 @@ For each locus, split the individual fastas out, remove gaps from sequences, the
 salloc -p work -n 1 -N 1 -c 4 -A pawsey0220 --time=01:00:00
 module load python/3.11.6
 for locus in $(cat loci.txt); do
-python3 /software/projects/pawsey0220/anderson/scripts/remove_ns.py -r gaps "$locus".fasta
-python3 /software/projects/pawsey0220/anderson/scripts/fasta_splitting.py mod_"$locus".fasta
+python3 remove_ns.py -r gaps "$locus".fasta
+python3 fasta_splitting.py mod_"$locus".fasta
 for sample in $(grep ">" "$locus".fasta | cut -f 2 -d ">"); do
 if [ ! -d "$sample" ]; then
 mkdir "$sample"
@@ -1994,17 +2078,14 @@ cat ../"$sample"/*.fasta > "$sample"_map_ref.fa
 paste <(echo ${sample}) <(echo ${sample}_map_ref.fa) >> mapping_file.txt
 done
 
-# copy over scripts and run mapping
-cp /software/projects/pawsey0220/anderson/scripts/mapping.sh .
+# need two scripts in the working directory: mapping.sh and mapping_array.sbatch
 # modify the mapping script to make it more strict (minid=0.95)
-cp /software/projects/pawsey0220/anderson/scripts/mapping_array.sbatch .
 # modify the array script to match how many samples to map (69, so 0-68)
 sbatch mapping_array.sbatch mapping_file.txt
 
-# after it finishes, copy over scripts for samtools and run consensus generation
-cp /software/projects/pawsey0220/anderson/scripts/samtools_summary.sh .
+# after it finishes, run consensus generation
+# need two scripts in the working directory: samtools_summary.sh and samtools_array.sbatch
 # modify the samtools_summary.sh to use min_depth=6, het_fraction=0.3, call_fraction=0.6
-cp /software/projects/pawsey0220/anderson/scripts/samtools_array.sbatch .
 # modify the array script to match how many samples to map (69, so 0-68)
 sbatch samtools_array.sbatch -f ../map_samples.txt
 ```
@@ -2031,7 +2112,7 @@ module load python/3.11.6
 
 # grab the consensus sequences and move them
 for sample in $(cat ../map_samples.txt); do
-python3 /software/projects/pawsey0220/anderson/scripts/fasta_splitting.py "$sample"/"$sample"_consensus.fasta
+python3 fasta_splitting.py "$sample"/"$sample"_consensus.fasta
 for outfasta in "$sample"-*.fasta; do
 mv "$outfasta" ../"$sample"/"${outfasta/${sample}-/consens_}"
 done
@@ -2052,14 +2133,14 @@ exit
 
 Run alignments of the loci with MAFFT
 ```bash
-cp /software/projects/pawsey0220/anderson/scripts/align_phylo.sbatch .
+cp align_phylo.sbatch .
 # modify the script for the cleaning step to remove positions with > 80% gaps and retain default of sample removal when missing > 75%
 sbatch align_phylo.sbatch -a "none" -c "y" -f "aligning" -r "y"
 ```
 
 Generate a distance matrix from the alignments for use with SplitsTree4
 ```bash
-Rscript ~/scripts/align_to_distance.R -p "g" in_align/*.fasta
+Rscript align_to_distance.R -p "g" in_align/*.fasta
 ```
 The resulting distance network is more resolved than from the HybPiper dataset, though it still lacks resoultion outside of SER and CUN  
 A few samples suggest errors in assembly and/or mapping: FOR3-01,FOR1-07,FOR1-02  
@@ -2067,8 +2148,334 @@ HERB2 is recovered in a hybrid position (shared distances with CUN), but HERB1 i
 
 Note: essentially the same structure is recovered by generating a distance matrix from the exon alignments  
 This suggests adding read mapping to full loci is not effectively changing relationships from unambiguous assemblies  
-In other words, underlying heterozygosity is not effective at clustering the hybrids for these loci with skimming data  
+In other words, recovering underlying heterozygosity in non-exon regions may not be particularly effective  
 
 Heterozygosity is nonetheless clearly different (outliers) for the HERB samples:  
 HERB samples: 1.27% heterozygosity (1.25–1.29)  
 other samples: 0.41% heterozygosity (0.11–0.64)  
+
+### SNPs
+Direct SNP calling from read mapping may be more effective than the consensus generation and alignment  
+
+To attempt to call SNPs from the A353 genes for other analyses, create consensus sequences for each locus  
+This will produce a pseudo genome reference to map reads, generate BAM files and call SNPs  
+First, generate the consensus per locus using the cleaned alignments of genes (in the `in_align` folder)
+```bash
+for align in *_clean.fasta; do
+locus="${align/_clean\.fasta/}"
+python3 consensus.py -t 0.2 $align
+sed "s/^>consensus/>$locus/" consensus.fasta > consensus_"$locus".fasta
+rm consensus.fasta
+done
+```
+
+Concatenate the consensus sequences together into a single reference fasta
+```bash
+cat consensus_*.fasta > ../map_ref.fasta
+```
+
+Run read mapping for each sample against the reference
+```bash
+mkdir mapping && cd mapping
+ln -s /scratch/pawsey0220/anderson/Adenanthos/qc/*/*.gz .
+rm HERB1_R*.gz		# remove the full HERB reads
+rm HERB2_R*.gz
+
+# concatenate loci and make mapping file
+# copy the `map_samples.txt` file into the current directory
+for sample in $(cat map_samples.txt); do
+paste <(echo ${sample}) <(echo map_ref.fasta) >> mapping_file.txt
+done
+
+# need two scripts in the working directory: mapping.sh and mapping_array.sbatch
+# modify the mapping script to make it more strict (minid=0.95), ambiguous to "best", and pairedonly=f
+# modify the array script to match how many samples to map (69, so 0-68)
+sbatch mapping_array.sbatch mapping_file.txt
+```
+
+#### GATK
+Use the Genome Analysis Toolkit (GATK) v. 4.6.2.0 (https://github.com/broadinstitute/gatk) to call SNPs from the BAM files  
+
+The steps are:  
+
+(1) HaplotypeCaller  
+For each sample, call SNPs and indels in GVCF mode to produce an intermediate GVCF file that will be used for joint genotyping later  
+This step is the most time consuming, but can be parallelised  
+```bash
+# first make sure the reference is indexed
+gatk CreateSequenceDictionary --REFERENCE map_ref.fasta
+samtools faidx map_ref.fasta
+
+# each sample needs to have read groups specified in the BAM for GATK to work
+gatk AddOrReplaceReadGroups \
+	--INPUT {sample}/map_sorted.bam \
+	--OUTPUT {sample}_rg.bam \
+	--RGLB "mylib" \	# the read group library
+	--RGPL ILLUMINA \	# the read group platform
+	--RGPU "myunit" \	# the read group platform unit
+	--RGSM {sample} \	# the read group sample name
+	--CREATE_INDEX true	# whether to index the resulting BAM file
+
+# run the calling
+gatk --java-options "-Xmx16g" HaplotypeCaller \
+	--reference map_ref.fasta \
+	--input {sample}_rg.bam \
+	--output {sample}.gvcf.gz \
+	--emit-ref-confidence GVCF
+```
+
+Run this in parallel with an array script  
+Note: the array script needs a `hapcall_file.txt` with three columns corresponding to sample, reference and bamfile
+```bash
+# in the `mapping` folder
+for sample in $(cat map_samples.txt); do
+paste <(echo $sample) <(echo $(pwd)/map_ref.fasta) <(echo $(pwd)/$sample/map_sorted.bam) >> hapcall_file.txt
+done
+
+# run the array (ensure the script is set to match the number of samples: 69, so 0–68)
+sbatch gatk_hapcall_array.sbatch hapcall_file.txt
+```
+
+(2) GenomicsDBImport  
+Prior to the joint genotyping, the individual GVCF files need to be combined into a database  
+These files need to be specified in a `gvcf_list.txt`: tab-separated sampleIDs and paths to GVCF files produced in the previous step  
+```bash
+# the tool requires the "intervals" to operate on; generate this from the indexed reference file
+# I adapted the answer here: https://www.biostars.org/p/486600/ to generate a BED file
+# NOTE: the file extension for the output is *critical*
+awk 'OFS="\t" {print $1, "0", $2}' map_ref.fasta.fai > map_ref.bed
+gatk BedToIntervalList \
+	--INPUT map_ref.bed \
+	--OUTPUT map_ref.bed.interval_list \
+	--SEQUENCE_DICTIONARY map_ref.dict
+
+# run the database generation (specify memory slightly less than available)
+gatk --java-options "-Xmx44g -Xms44g" GenomicsDBImport \
+	--genomicsdb-workspace-path "mydb" \	# the path to where you want the database
+	--intervals map_ref.bed.interval_list \
+	--batch-size 16 \	# the number of samples to read at once (can reduce memory usage)
+	--sample-name-map "gvcf_list.txt"	# tab-delimited file with sampleID and /path/to/gvcf_file
+```
+
+(3) GenotypeGVCFs
+Use the combined sample GVCFs to jointly call variants for the whole group  
+```bash
+gatk --java-options "-Xmx16g" GenotypeGVCFs \
+	--reference map_ref.fasta \
+	--variant gendb://mydb \	# the database created in the previous step (current directory)
+	--output all_variants.vcf.gz
+```
+
+(4) SelectVariants + VariantFiltration
+Prior to analyses, variants need to be filtered to only SNPs, and only SNPs that pass strict thresholds  
+```bash
+# grab SNPs
+gatk SelectVariants \
+	--variant all_variants.vcf.gz \
+	--output snp_variants.vcf.gz \
+	--select-type-to-include SNP
+
+# filter the SNPs
+# I used most of the example settings on
+# https://gatk.broadinstitute.org/hc/en-us/articles/360035531112--How-to-Filter-variants-either-with-VQSR-or-by-hard-filtering#2
+# but increased the QD value from 2.0 to 6.0 (more conservative)
+gatk VariantFiltration \
+	--reference map_ref.fasta \
+	--variant snp_variants.vcf.gz \
+	--output snp_variants_filtered.vcf.gz \
+	--filter-expression "QD < 6.0" --filter-name "QD6" \		# variant confidence/quality by depth
+	--filter-expression "SOR > 3.0" --filter-name "SOR3" \		# symmetric odds ratio of 2x2 contingency table for strand bias
+	--filter-expression "FS > 60.0" --filter-name "FS60" \		# Phred-scaled p-value of Fisher's exact test for strand bias
+	--filter-expression "MQ < 40.0" --filter-name "MQ40" \		# mapping quality
+	--filter-expression "MQRankSum < -12.5" --filter-name "MQRS125" \	# test of alt vs ref mapping qualities (needs hets present)
+	--filter-expression "ReadPosRankSum < -8.0" --filter-name "RPRS8" # test of alt vs ref position bias (needs hets present)
+
+# output the final VCF with only the SNPs that passed filters
+gatk SelectVariants \
+	--variant snp_variants_filtered.vcf.gz \
+	--output snp_variants_final.vcf \
+	--exclude-filtered
+```
+
+Steps 2, 3 and 4 can be run in a single job with the input of a list of sampleIDs and paths to GVCF files generated in step 1  
+```bash
+# generate the list of GVCF files
+for sample in $(cat map_samples.txt); do
+paste <(echo $sample) <(echo "$(pwd)/${sample}/${sample}.gvcf.gz") >> gvcf_list.txt
+done
+
+# run the job
+sbatch gatk_snps.sbatch -r map_ref.fasta -g gvcf_list.txt
+```
+This produced a VCF file of 142,772 SNPs for 69 samples across 284 loci  
+
+#### Filtering
+To reduce the dataset to higher quality SNPs, filter the large VCF  
+For genetic structure, keep biallelic SNPs with minimum average depth across the dataset of 15,  
+minor allele count of 3, and in at least 90% of samples  
+Sample a single SNP per gene to avoid linkage
+```bash
+python3 filter_vcf.py --minmd 15 --mac 3 --bial yes --mincov 0.9 snp_variants_final.vcf -o struct
+# Read a VCF file with 69 samples and 142772 SNPs and filtered it to 69 samples and 11078 SNPs
+
+python3 single_snp.py struct.vcf -r yes
+# Wrote a new VCF with 238 SNPs sampled from 11078 SNPs
+mv mod_struct.vcf struct_unlink.vcf
+```
+
+For a larger set of SNPs (linked = multiple per gene), relax filtering  
+Keep SNPs in at least 25% of samples, with no restrictions on allele count
+```bash
+python3 filter_vcf.py --minmd 15 --mincov 0.25 snp_variants_final.vcf -o dist
+# Read a VCF file with 69 samples and 142772 SNPs and filtered it to 69 samples and 25434 SNPs
+```
+
+#### Structure
+For assessing genetic structure, create a STRUCTURE input file
+```bash
+# number the collecting localities as "pops" based on the samples.txt file
+cut -f 1 -d "-" samples.txt > temp_pops.txt
+# manually change HERB1 and HERB2 to FOR1 and FOR2 as closest pop
+
+index=1
+for pop in $(cat temp_pops.txt | sort | uniq); do
+sed -i "s/$pop/$index/g" temp_pops.txt
+index=$((index + 1))
+done
+paste <(cat samples.txt) <(cat temp_pops.txt) > str_pops.txt
+rm temp_pops.txt
+
+# generate the input file
+python3 vcf_to_structure.py -p str_pops.txt struct_unlink.vcf
+# Converted a VCF file with 69 samples and 238 SNP loci to Structure format with 69 samples and 238 SNP loci
+mv struct_unlink.vcf.str structure_input.str
+
+# ensure the str_pops.txt file matches the samples found in the input file
+cut -f 1 structure_input.str | uniq > temp
+grep -f temp str_pops.txt > temp2
+mv temp2 str_pops.txt && rm temp*
+```
+
+The STRUCTURE input file can be used to run STRUCTURE, using the `mainparams` and `extraparams` that come with the program  
+(https://web.stanford.edu/group/pritchardlab/structure_software/release_versions/v2.3.4/html/structure.html)  
+Alter specific lines to match the dataset
+```bash
+# mainparams
+NUMINDS	69
+NUMLOCI	238
+BURNIN	100000
+NUMREPS	200000
+MARKERNAMES	0
+
+#extraparams
+UPDATEFREQ	1000
+RANDOMIZE	0
+```
+
+Upload the files `structure_input.str`, `mainparams` and `extraparams` to the supercomputer to run  
+Submit multiple jobs, one per K, each run using the input file and the two params files  
+Run for 40 replicates (in parallel) per K from K1 to K7 (7 40-core jobs)
+```bash
+for ((kval=1; kval<=7; kval++)); do
+sbatch --time=06:00:00 structure.sbatch -k $kval -s structure_input.str
+done
+```
+
+Reduce output file size by removing all extraneous "Locus" information  
+```bash
+for file in *_f; do
+sed -n '/Locus/q;p' $file > temp && mv temp $file
+done
+```
+
+Download the files, evaluate the likelihoods of the runs, and use the top 20 runs per K to determine optimum K
+```bash
+# grab likelihoods from the output files
+for K in {1..7}; do
+for rep in {1..40}; do
+grep "Estimated Ln Prob" output_"$K"_"$rep"_f | cut -f 2 -d "=" | sed "s/^[[:space:]]*/$K\t/" >> k${K}_likes.txt
+done
+done
+
+# determine top runs for each K
+for K in {1..7}; do
+# number the likelihoods to keep track of which reps they refer to
+awk 'OFS="\t" {print $1, $2, NR}' k"$K"_likes.txt | sort -k2 -nr > temp && \
+mv temp k"$K"_likes.txt
+# copy the top 20 likelihoods to a new file for determining bestK using Evanno
+cut -f 1,2 k"$K"_likes.txt | head -n 20 > select_k"$K"_likes.txt
+# copy the top 10 runs to new files (to reduce variability for CLUMPAK) for plotting
+for run_num in $(cut -f 3 k"$K"_likes.txt | head -n 10); do
+cp output_"$K"_"$run_num"_f select_"$K"_"$run_num"_f
+done
+done
+```
+
+Evaluate the best K based on the Evanno method using the script `bestK_Evanno.py`, and zip the results together
+```bash
+cat select*likes.txt > all_likes_selected.txt
+python3 bestK_Evanno.py -l all_likes_selected.txt -o bestK
+zip results.zip select_*_f
+```
+
+Use a Singularity container to run CLUMPAK (http://clumpak.tau.ac.il/index.html) with default settings
+```bash
+singularity exec -H "$(pwd)" clumpak.sif CLUMPAK.pl --id clumpakrun \
+--dir clumpakout --file results.zip --inputtype structure > /dev/null 2>&1
+rm arabid.perm_datafile
+```
+
+Create qfiles from the major modes for plotting
+```bash
+for K in {1..7}; do
+cut -f 2 -d ':' clumpakout/K\=${K}/MajorCluster/CLUMPP.files/ClumppIndFile.output | awk '{$1=$1; print}' > qfile"$K".txt
+done
+```
+
+If there are minor modes of interest, they can also be kept as qfiles for plotting
+```bash
+for K in {1..7}; do
+for minor_num in {1..4}; do
+if [ -d clumpakout/K\=${K}/MinorCluster${minor_num} ]; then
+cut -f 2 -d ':' clumpakout/K\=${K}/MinorCluster${minor_num}/CLUMPP.files/ClumppIndFile.output | awk '{$1=$1; print}' > qfile"$K"_minor"$minor_num".txt
+fi
+done
+done
+```
+There was a minor mode for K6  
+
+Plot modes of interest using the script `structure_barplots.py`  
+Colours for the bars can be specified in a `colours.txt` file, one colour (in hex code) per line  
+(may require iterative adjustment depending on how the individuals are assigned in qfiles)  
+To sort the barplots to a specific sampling order, create a text file (`str_sort.txt`) with sample IDs (one per line) in the order desired  
+These can be added to the below command as `-s str_sort.txt`
+```bash
+for num in {2..5}; do
+python3 structure_barplots.py -o K"$num" -p ../str_pops.txt -c ../colours.txt -q qfile"$num".txt
+done
+```
+
+#### Distances
+For the distances, generate a matrix for input to SplitsTree4
+```bash
+Rscript distances.R -d M -o dist -v dist.vcf
+```
+The output (`dist_MATCHSTATES.nex`) can be use as input to SplitsTree4 to generate a NeighborNet network  
+
+
+#### Hybrid plot
+To better display the hybridity of the *A. eyrei* sample and the putative hybrid, plot heterozygosity vs. PC1 of a PCA  
+Use the low missing data VCF files to assess heterozygosity and run PCA  
+Restrict the comparison to only the putative parental species (*A. forrestii* and *A. cuneatus*) and the hybrids  
+
+Put the sampleIDs and desired colours of points in a text file `pca_samples.txt`, tab separated and one per line
+```bash
+Rscript het_pca_plot.R -o struct struct.vcf -s pca_samples.txt
+# Read in a VCF with 69 samples, 238 loci and 11078 SNPs
+# Filtered and Converted the VCF to a genlight with 34 samples, 238 loci, and 11078 SNPs
+
+# also run on the unlinked SNPs for comparison (doesn't make much difference)
+Rscript het_pca_plot.R -o struct_unlink struct_unlink.vcf -s pca_samples.txt
+# Read in a VCF with 69 samples, 238 loci and 238 SNPs
+# Filtered and Converted the VCF to a genlight with 34 samples, 238 loci, and 238 SNPs
+```
