@@ -9,3 +9,4 @@ Raw sequencing data and annotated sequences are available from the European Nucl
 
 The full steps and analyses are outlined in `Adenanthos_analysis.md`, with many commands applicable to the Pawsey supercomputer Setonix  
 
+[![DOI](https://zenodo.org/badge/1103751422.svg)](https://zenodo.org/badge/latestdoi/1103751422)
